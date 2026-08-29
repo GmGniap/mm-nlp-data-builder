@@ -1,7 +1,7 @@
 [project]
-name = "telegram-nlp-annotation-platform"
+name = "mm-nlp-data-builder"
 version = "0.1.0"
-description = "Multi-agent Telegram scraping and NLP annotation platform"
+description = "Building required tools for Myanmar NLP tasks."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

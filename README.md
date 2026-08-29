@@ -1,10 +1,10 @@
-# Multi-Agent Telegram & NLP Annotation Platform
+# MM NLP Data Builder
 
-This repository is structured as a multi-agent workspace managed with **`uv`** and **Python 3.13**.
+This repository is aimed to created required tools for Myanmar NLP tasks such as data annotation or data collection.
 
 ---
 
-## 🏛️ Multi-Agent Workspace Structure
+## 🏛️ Workspace Structure
 
 ```
 .
@@ -12,7 +12,7 @@ This repository is structured as a multi-agent workspace managed with **`uv`** a
 ├── README.md                      # Overall project documentation and subagent roadmap
 ├── .gitignore                     # Repository gitignore policies
 │
-├── architect/                     # 👤 AGENT 1: Main Architect Workspace
+├── architect/                     # Main Architect Docs
 │   ├── PROJECT_OVERVIEW.md        # System architecture, infra, data flow, DB choices
 │   ├── PROJECT_COMPONENTS.md      # Detailed component breakdown & API contracts
 │   ├── SUBAGENT_INSTRUCTIONS.md   # SOP and prompt guidelines for Agent 2 & Agent 3
@@ -22,7 +22,7 @@ This repository is structured as a multi-agent workspace managed with **`uv`** a
 │   └── models.py                  # Shared SQLAlchemy database models for messages & annotations
 │
 ├── services/
-│   ├── telegram_scraper/          # 👤 AGENT 2: Python Developer Agent (Telegram Scraping)
+│   ├── telegram_scraper/          # Python Developer Agent (Telegram Scraping)
 │   │   ├── config.example.yaml    # Config-driven target channels & fetch parameters
 │   │   ├── scraper.py             # Telethon/Pyrogram scraper implementation
 │   │   ├── storage.py             # DB persistence adapter
@@ -30,7 +30,7 @@ This repository is structured as a multi-agent workspace managed with **`uv`** a
 │   │   ├── README.md              # Agent 2 developer guide
 │   │   └── requirements.txt       # Telegram scraping dependencies
 │   │
-│   └── nlp_annotation_app/        # 👤 AGENT 3: Full-Stack Developer Agent (NLP Annotation UI)
+│   └── nlp_annotation_app/        # Full-Stack Developer Agent (NLP Annotation UI)
 │       ├── app.py                 # Flask web application entrypoint (Arloo integrated)
 │       ├── models.py              # Application models (Users, Annotations, Scraped Data)
 │       ├── templates/             # UI Templates (login, register, dashboard, annotate)
@@ -57,12 +57,12 @@ source .venv/bin/activate
 uv pip install -r services/telegram_scraper/requirements.txt -r services/nlp_annotation_app/requirements.txt
 ```
 
-### 3. Run Telegram Scraper (Agent 2)
+### 3. Run Telegram Scraper
 ```bash
 uv run python services/telegram_scraper/scraper.py --dry-run
 ```
 
-### 4. Run Flask Annotation Platform (Agent 3)
+### 4. Run Flask Annotation Platform
 ```bash
 uv run python services/nlp_annotation_app/app.py
 ```

@@ -4,7 +4,7 @@ This document provides explicit instructions, responsibilities, and operational 
 
 ---
 
-## 🤖 Instructions for Agent 2: Python Developer Agent (Telegram Scraper)
+## Python Developer Agent (Telegram Scraper)
 
 ### Primary Mission
 Build a robust, config-driven, automated Telegram channel message scraper that stores structured text messages in the shared SQLite database, and run a Myanmar sentence-cleaning pipeline that uploads split sentences to Neon PostgreSQL.
@@ -12,10 +12,7 @@ Build a robust, config-driven, automated Telegram channel message scraper that s
 ### Architecture — Two-Database Design
 | Database | Role | Who writes | Who reads |
 |---|---|---|---|
-| **SQLite** (`polar_tele.db`) | Raw `TelegramMessage` rows | `scraper.py` | `cleaner.py` |
-| **Neon PostgreSQL** | Cleaned `CleanTeleText` sentence rows | `cleaner.py` | Flask annotation app |
-
-This separation eliminates SQLite write contention between the scraper and the Flask app.
+| **PostgreSQL** | Cleaned `CleanTeleText` sentence rows | `cleaner.py` | Flask annotation app |
 
 ### Workspace Scope
 `services/telegram_scraper/` and `.github/workflows/scrape_telegram.yml`
@@ -46,7 +43,7 @@ This separation eliminates SQLite write contention between the scraper and the F
 
 ---
 
-## 🤖 Instructions for Agent 3: Full-Stack Developer Agent (NLP Annotation Platform)
+## Full-Stack Developer Agent (NLP Annotation Platform)
 
 ### Primary Mission
 Build an intuitive, responsive Flask web application for annotators to review individual **cleaned sentence lines** from Telegram messages, apply NLP tags, and export structured datasets.
