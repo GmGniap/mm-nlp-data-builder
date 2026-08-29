@@ -58,23 +58,25 @@ Raw Telegram messages are stored in `TelegramMessage`. A separate cleaning pipel
 1. **Flask Application Architecture (`app.py`)**:
    - Maintain modular blueprints or routing structure for Auth, Dashboard, and Annotation.
    - Support `Flask-Login` authentication flow (register, login, logout, password hashing).
-2. **Database Models (`models.py` & `shared/models.py`)**:
-   - Import and use shared models (`User`, `TelegramMessage`, `AnnotationTag`, `CleanTeleText`).
-   - Expose `CleanTeleText` as a Flask-SQLAlchemy model in the local `models.py` wrapper (same pattern as `TelegramMessage`).
+2. **Database Models (`shared/annotation_models.py`)**:
+   - Import and use `User`, `CleanTeleText`, `CleaningLog`, `AnnotationResult`, and `SkippedRecord` from `shared.annotation_models`.
+   - The annotation app uses Neon PostgreSQL directly via `NEON_DATABASE_URL`.
 3. **Annotation Data Source — `CleanTeleText`**:
-   - All annotation-facing API routes (`/api/state`, `/api/update`, `/api/delete`, `/api/save`, `/api/config`) must query `CleanTeleText` (not `TelegramMessage`) for the list of items to annotate.
-   - The `text` field shown to the annotator should come from `CleanTeleText.sentence`.
-   - `AnnotationTag.message_id` should store the `CleanTeleText.id` (i.e. the PK of the cleaned line row) so that tags are attached at sentence granularity.
-   - The source URL / channel info should be derived by joining `CleanTeleText → TelegramMessage` via `CleanTeleText.telegram_message_id`.
+   - All annotation-facing API routes (`/api/state`, `/api/submit`, `/api/skip`, `/api/save`, `/api/config`) must query `CleanTeleText` for the list of items to annotate.
+   - `AnnotationResult` stores submitted annotations as a flexible JSON blob (`payload_json`) per user, per sentence (`clean_line_id`), and per annotation type.
+   - `SkippedRecord` tracks skipped sentences per user and per annotation type.
+   - `CleanTeleText` contains denormalized columns (`channel_name`, `source_message_id`) to build Telegram deep-links without needing to query the scraper's database.
+   - **Last State Management**: `/api/state` should support `index=-1` (as default) to dynamically query the database for the first `CleanTeleText` row not present in `AnnotationResult` or `SkippedRecord` for the current user. This enables independent progress tracking across multiple users.
 4. **Dashboard (`dashboard.html`)**:
-   - Statistics should reflect `CleanTeleText` row counts (total sentences, pending, annotated) rather than raw message counts.
-   - Keep a secondary count of total `TelegramMessage` records as context ("X messages / Y sentences").
+   - Statistics should reflect `CleanTeleText` row counts (total sentences, pending, annotated, skipped).
+   - Display the latest `CleaningLog` watermark timestamp to show when the database was last updated by the scraper pipeline.
 5. **Web User Interface (`templates/`)**:
    - Use modern styling (Tailwind CSS via CDN) in `base.html`.
-   - Build `dashboard.html` to visualize queue statistics (Total Sentences, Pending, Annotated, Active Annotators).
-   - Build `annotate.html` offering interactive text selection and tagging buttons (e.g. Entity Types: `PER`, `ORG`, `LOC`, `MISC`; Sentiment: `Positive`, `Negative`, `Neutral`). Display the sentence text and, below it, a breadcrumb/link back to the parent Telegram message.
+   - Build `dashboard.html` to visualize queue statistics.
+   - Build `annotate.html` (Arloo UI) offering interactive text selection, binary task toggle buttons, and dynamic field configuration via `annotation_config.yaml`.
+   - The UI defaults `IDX` to `-1` to trigger the backend's dynamic resume logic on load.
 6. **API & Data Export**:
-   - Implement `/api/annotate` POST route to submit annotations and update `CleanTeleText`-level status.
-   - Implement `/export` GET route allowing users to download labeled datasets as JSON / JSONL / CSV, with both `sentence` and source metadata columns.
+   - Implement `/api/submit` and `/api/skip` POST routes to submit/skip annotations and update `AnnotationResult` / `SkippedRecord` tables.
+   - Implement `/api/save` GET route allowing users to download labeled datasets as JSON / CSV / TSV.
 7. **Testing**:
    - Test application startup locally on port 5000 (`python app.py`).

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}🥔 Arloo Telegram Annotation Tool — NLP Platform{% endblock %}
+{% block title %} Myanmar NLP Data Builder {% endblock %}
 
 {% block content %}
 <link href="https://fonts.googleapis.com/css2?family=Padauk:wght@400;700&family=Noto+Sans:wght@400;700&display=swap"
@@ -140,8 +140,7 @@
             <label for="langSelect" class="font-semibold text-slate-400">
                 <i class="fa-solid fa-language"></i> Lang:
             </label>
-            <select id="langSelect" onchange="onLangChange(this.value)"
-                class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-slate-100 text-xs font-mono
+            <select id="langSelect" onchange="onLangChange(this.value)" class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-slate-100 text-xs font-mono
                        focus:outline-none focus:border-emerald-500 cursor-pointer transition">
                 <!-- options injected by init() -->
             </select>
@@ -152,8 +151,7 @@
             <label for="annTypeSelect" class="font-semibold text-slate-400">
                 <i class="fa-solid fa-tags"></i> Task:
             </label>
-            <select id="annTypeSelect" onchange="onAnnTypeChange(this.value)"
-                class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-slate-100 text-xs font-mono
+            <select id="annTypeSelect" onchange="onAnnTypeChange(this.value)" class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-slate-100 text-xs font-mono
                        focus:outline-none focus:border-emerald-500 cursor-pointer transition">
                 <!-- options injected by init() -->
             </select>
@@ -170,7 +168,7 @@
 </div>
 
 <script>
-    let FIELDS = [], IDX = 0, TOTAL = 0;
+    let FIELDS = [], IDX = -1, TOTAL = 0;
     let saveTimer = null, dirty = false;
     let LANG = 'mya';  // active language — updated by dropdown
     let ANN_TYPE = 'polarization';
@@ -186,7 +184,7 @@
 
         // Populate language dropdown from API
         const sel = document.getElementById('langSelect');
-        (c.available_languages || [{code:'mya',label:'Myanmar (mya)'},{code:'eng',label:'English (eng)'}])
+        (c.available_languages || [{ code: 'mya', label: 'Myanmar (mya)' }, { code: 'eng', label: 'English (eng)' }])
             .forEach(l => {
                 const opt = document.createElement('option');
                 opt.value = l.code;
@@ -197,7 +195,7 @@
 
         // Populate annotation type dropdown
         const annSel = document.getElementById('annTypeSelect');
-        (c.available_annotation_types || [{code:'polarization',label:'Polarization'}])
+        (c.available_annotation_types || [{ code: 'polarization', label: 'Polarization' }])
             .forEach(a => {
                 const opt = document.createElement('option');
                 opt.value = a.code;
@@ -283,7 +281,7 @@
             }
         }
 
-    // Binary fields grouped into cards
+        // Binary fields grouped into cards
         const bins = FIELDS.filter(f => f.type === 'binary');
         if (bins.length) {
             const groups = {};
@@ -350,7 +348,7 @@
         // to require explicit Submit or Skip.
         setDirty(false);
     }
-    
+
     function showFlash(msg, colorClass) {
         const el = document.getElementById('saveInd');
         el.textContent = msg;
@@ -365,7 +363,7 @@
 
     async function submitRecord() {
         if (!CURRENT_RECORD) return;
-        
+
         // Collect payload
         const payload = {};
         for (const f of FIELDS) {
@@ -373,17 +371,17 @@
                 payload[f.name] = CURRENT_RECORD[f.name];
             }
         }
-        
+
         const r = await fetch('/api/submit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
+            body: JSON.stringify({
                 clean_line_id: CURRENT_RECORD.db_id,
                 annotation_type: ANN_TYPE,
                 payload: payload
             })
         });
-        
+
         if (r.ok) {
             const res = await r.json();
             showFlash('✓ Submitted', 'text-emerald-400');
@@ -393,16 +391,16 @@
 
     async function skipRecord() {
         if (!CURRENT_RECORD) return;
-        
+
         const r = await fetch('/api/skip', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
+            body: JSON.stringify({
                 clean_line_id: CURRENT_RECORD.db_id,
                 annotation_type: ANN_TYPE
             })
         });
-        
+
         if (r.ok) {
             const res = await r.json();
             showFlash('⏭ Skipped', 'text-amber-400');
