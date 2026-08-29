@@ -1,6 +1,6 @@
 # MM NLP Data Builder
 
-This repository is aimed to created required tools for Myanmar NLP tasks such as data annotation or data collection.
+This repository is aimed to build essential tools for Myanmar Natural Language Processing (NLP) tasks, specifically focusing on data collection and data annotation. The project is deeply inspired by the research and ideas of [Dr. Ye Kyaw Thu](https://sites.google.com/site/yekyawthunlp/), and take references from his code and works while implementing features.
 
 ---
 

@@ -338,7 +338,7 @@ def api_config():
 @app.route('/api/state')
 @login_required
 def api_state():
-    index_param = request.args.get('index', type=int, default=0)
+    index_param = request.args.get('index', type=int, default=-1)
     # Language and annotation type can be overridden per-request by the UI
     lang_param = request.args.get('lang', default=None)
     ann_type = request.args.get('ann_type', default=DEFAULT_ANNOTATION_TYPE)
@@ -351,6 +351,25 @@ def api_state():
             "record": None,
             "annotator": get_user_annotator_name()
         })
+
+    if index_param == -1:
+        # Find the first pending sentence for the current user
+        subq_ann = db.session.query(AnnotationResult.clean_line_id).filter_by(
+            user_id=current_user.id, annotation_type=ann_type
+        )
+        subq_skip = db.session.query(SkippedRecord.clean_line_id).filter_by(
+            user_id=current_user.id, annotation_type=ann_type
+        )
+        
+        first_pending = CleanTeleText.query.filter(
+            ~CleanTeleText.id.in_(subq_ann),
+            ~CleanTeleText.id.in_(subq_skip)
+        ).order_by(CleanTeleText.id.asc()).first()
+
+        if first_pending:
+            index_param = CleanTeleText.query.filter(CleanTeleText.id < first_pending.id).count()
+        else:
+            index_param = total - 1
 
     if index_param < 0:
         index_param = 0
