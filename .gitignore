@@ -1,0 +1,40 @@
+# Credentials
+/services/telegram_scraper/config.yaml
+
+# uv & Virtual Environments
+.venv/
+environment/
+env/
+venv/
+ENV/
+
+# Python cache & build outputs
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+
+# Database & Storage
+*.db
+*.sqlite
+*.sqlite3
+instance/
+shared_data.db
+
+# Telegram Scraping Sessions & Credentials
+*.session
+*.session-journal
+config.yaml
+.env
+
+# Environment & IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+logs/

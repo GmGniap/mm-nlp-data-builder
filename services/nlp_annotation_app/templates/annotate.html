@@ -1,0 +1,464 @@
+{% extends "base.html" %}
+
+{% block title %}🥔 Arloo Telegram Annotation Tool — NLP Platform{% endblock %}
+
+{% block content %}
+<link href="https://fonts.googleapis.com/css2?family=Padauk:wght@400;700&family=Noto+Sans:wght@400;700&display=swap"
+    rel="stylesheet">
+
+<style>
+    .arloo-app {
+        font-family: 'Padauk', 'Noto Sans', sans-serif;
+    }
+
+    .arloo-header {
+        background: linear-gradient(135deg, #4a7c59, #2d5a3d);
+    }
+
+    .field-input:focus {
+        outline: none;
+        border-color: #4a7c59;
+        box-shadow: 0 0 0 2px rgba(74, 124, 89, 0.25);
+    }
+
+    textarea.field-input.text-main {
+        min-height: 110px;
+        font-size: 16px;
+        background: #fffde7;
+        border-color: #ffd54f;
+        color: #1a202c;
+    }
+
+    .toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: #1e293b;
+        border: 2px solid #334155;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.15s;
+        user-select: none;
+        font-size: 14px;
+        color: #cbd5e1;
+    }
+
+    .toggle:hover {
+        background: #064e3b;
+        border-color: #10b981;
+    }
+
+    .toggle.on {
+        background: #065f46;
+        border-color: #34d399;
+        color: #ecfdf5;
+        font-weight: 600;
+    }
+
+    .toggle input {
+        display: none;
+    }
+
+    .toggle .dot {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid #64748b;
+        transition: all 0.15s;
+        flex-shrink: 0;
+    }
+
+    .toggle.on .dot {
+        background: #34d399;
+        border-color: #059669;
+    }
+</style>
+
+<div class="arloo-app max-w-6xl mx-auto bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+
+    <!-- Arloo Header -->
+    <div
+        class="arloo-header px-6 py-4 flex flex-wrap justify-between items-center text-white border-b border-slate-700">
+        <h1 class="text-xl font-bold flex items-center gap-2">
+            <span>🥔 Mod-Arloo Annotation Tool</span>
+            <span class="text-xs bg-black/20 px-2.5 py-0.5 rounded-full text-emerald-200">POLAR Telegram Dataset</span>
+        </h1>
+        <span class="bg-white/15 px-3 py-1 rounded-full text-xs font-mono">
+            Annotator: <strong id="ann-name">{{ current_user.email.split('@')[0] }}</strong>
+        </span>
+    </div>
+
+    <!-- Interactive Toolbar -->
+    <div class="bg-slate-900 border-b border-slate-700 px-6 py-3 flex flex-wrap items-center gap-3">
+        <button
+            class="bg-slate-700 hover:bg-slate-600 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold transition"
+            onclick="nav(-1)">
+            <i class="fa-solid fa-backward-step"></i> Prev
+        </button>
+        <button
+            class="bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold transition"
+            onclick="nav(1)">
+            Next <i class="fa-solid fa-forward-step"></i>
+        </button>
+
+        <div class="flex items-center gap-2 text-xs text-slate-300 ml-2">
+            <span>Line:</span>
+            <input type="number" id="lineNum" min="1" value="1" onchange="jumpTo()"
+                class="w-16 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-center text-slate-100 font-mono text-xs focus:outline-none focus:border-emerald-500">
+            <span>/ <span id="totalNum">0</span></span>
+        </div>
+
+        <button
+            class="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition ml-2"
+            onclick="addNew()" style="display:none;">
+            <i class="fa-solid fa-plus"></i> Add New
+        </button>
+        <button
+            class="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition"
+            onclick="saveAs()">
+            <i class="fa-solid fa-download"></i> Save As
+        </button>
+        <button class="bg-rose-700 hover:bg-rose-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition"
+            onclick="delRec()" style="display:none;">
+            <i class="fa-solid fa-trash"></i> Delete
+        </button>
+
+        <button
+            class="bg-amber-500 hover:bg-amber-400 text-white px-4 py-1.5 rounded-lg text-xs font-semibold transition ml-2 shadow-lg shadow-amber-500/20"
+            onclick="skipRecord()">
+            <i class="fa-solid fa-forward"></i> Skip
+        </button>
+        <button
+            class="bg-emerald-500 hover:bg-emerald-400 text-white px-4 py-1.5 rounded-lg text-xs font-semibold transition shadow-lg shadow-emerald-500/20"
+            onclick="submitRecord()">
+            <i class="fa-solid fa-check"></i> Submit
+        </button>
+
+        <!-- Language selector -->
+        <div class="flex items-center gap-2 text-xs text-slate-300 ml-auto">
+            <label for="langSelect" class="font-semibold text-slate-400">
+                <i class="fa-solid fa-language"></i> Lang:
+            </label>
+            <select id="langSelect" onchange="onLangChange(this.value)"
+                class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-slate-100 text-xs font-mono
+                       focus:outline-none focus:border-emerald-500 cursor-pointer transition">
+                <!-- options injected by init() -->
+            </select>
+        </div>
+
+        <!-- Annotation Type selector -->
+        <div class="flex items-center gap-2 text-xs text-slate-300 ml-2">
+            <label for="annTypeSelect" class="font-semibold text-slate-400">
+                <i class="fa-solid fa-tags"></i> Task:
+            </label>
+            <select id="annTypeSelect" onchange="onAnnTypeChange(this.value)"
+                class="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-slate-100 text-xs font-mono
+                       focus:outline-none focus:border-emerald-500 cursor-pointer transition">
+                <!-- options injected by init() -->
+            </select>
+        </div>
+
+        <span class="text-xs font-mono font-semibold text-slate-400 ml-2" id="prog">0 / 0</span>
+        <span class="text-xs font-mono font-bold text-emerald-400 min-w-[75px] text-right" id="saveInd">✓ Saved</span>
+    </div>
+
+    <!-- Main Dynamic Form Content -->
+    <div class="p-6 space-y-6" id="content">
+        <div class="text-center py-12 text-slate-400">Loading annotation state...</div>
+    </div>
+</div>
+
+<script>
+    let FIELDS = [], IDX = 0, TOTAL = 0;
+    let saveTimer = null, dirty = false;
+    let LANG = 'mya';  // active language — updated by dropdown
+    let ANN_TYPE = 'polarization';
+    let CURRENT_RECORD = null;
+
+    async function init() {
+        const r = await fetch('/api/config');
+        const c = await r.json();
+        FIELDS = c.fields;
+        LANG = c.default_language || 'mya';
+        ANN_TYPE = c.default_annotation_type || 'polarization';
+        document.getElementById('ann-name').textContent = c.annotator;
+
+        // Populate language dropdown from API
+        const sel = document.getElementById('langSelect');
+        (c.available_languages || [{code:'mya',label:'Myanmar (mya)'},{code:'eng',label:'English (eng)'}])
+            .forEach(l => {
+                const opt = document.createElement('option');
+                opt.value = l.code;
+                opt.textContent = l.label;
+                if (l.code === LANG) opt.selected = true;
+                sel.appendChild(opt);
+            });
+
+        // Populate annotation type dropdown
+        const annSel = document.getElementById('annTypeSelect');
+        (c.available_annotation_types || [{code:'polarization',label:'Polarization'}])
+            .forEach(a => {
+                const opt = document.createElement('option');
+                opt.value = a.code;
+                opt.textContent = a.label;
+                if (a.code === ANN_TYPE) opt.selected = true;
+                annSel.appendChild(opt);
+            });
+
+        await loadState();
+    }
+
+    function onLangChange(code) {
+        LANG = code;
+        loadState(IDX);  // reload current record so auto_id updates immediately
+    }
+
+    function onAnnTypeChange(code) {
+        ANN_TYPE = code;
+        loadState(IDX);
+    }
+
+    async function loadState(indexParam = null) {
+        let url = '/api/state';
+        const idx = indexParam !== null ? indexParam : IDX;
+        url += `?index=${idx}&lang=${encodeURIComponent(LANG)}&ann_type=${encodeURIComponent(ANN_TYPE)}`;
+
+        const r = await fetch(url);
+        const s = await r.json();
+        IDX = s.index;
+        TOTAL = s.total;
+
+        document.getElementById('lineNum').value = TOTAL > 0 ? IDX + 1 : 0;
+        document.getElementById('totalNum').textContent = TOTAL;
+        document.getElementById('prog').textContent = TOTAL > 0 ? `${IDX + 1} / ${TOTAL}` : '0 / 0';
+
+        CURRENT_RECORD = s.record;
+        render(s.record);
+        setDirty(false);
+    }
+
+    function render(rec) {
+        const c = document.getElementById('content');
+        if (!rec) {
+            c.innerHTML = '<div class="text-center py-16 text-slate-400"><i class="fa-solid fa-inbox text-4xl mb-3 text-slate-600 block"></i> No records available in queue. Click <b>➕ Add New</b> or run the Telegram scraper to import data.</div>';
+            return;
+        }
+
+        let html = '';
+        if (rec.status === 'submitted') {
+            html += '<div class="mb-4 inline-block px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold border border-emerald-500/30"><i class="fa-solid fa-check-circle"></i> Submitted</div>';
+        } else if (rec.status === 'skipped') {
+            html += '<div class="mb-4 inline-block px-3 py-1 rounded-full bg-amber-500/20 text-amber-400 text-xs font-bold border border-amber-500/30"><i class="fa-solid fa-forward"></i> Skipped</div>';
+        } else {
+            html += '<div class="mb-4 inline-block px-3 py-1 rounded-full bg-slate-500/20 text-slate-400 text-xs font-bold border border-slate-500/30"><i class="fa-solid fa-clock"></i> Pending</div>';
+        }
+
+        // Text & auto_id fields
+        for (const f of FIELDS) {
+            if (f.type === 'auto_id' || f.type === 'text') {
+                const val = (rec[f.name] || '').toString();
+                const esc = escHtml(val);
+                const ro = f.readonly ? 'readonly' : '';
+                const hint = f.separator ? ` <span class="text-[10px] bg-slate-700 text-slate-300 px-2 py-0.5 rounded ml-2 font-mono">separate with ${f.separator}</span>` : '';
+                const ph = f.placeholder ? `placeholder="${escHtml(f.placeholder)}"` : '';
+                const desc = f.description ? ` <span class="text-[11px] text-slate-400 font-normal ml-2">(${escHtml(f.description)})</span>` : '';
+
+                if (f.type === 'auto_id' || !f.multiline) {
+                    html += `
+                    <div class="mb-4">
+                        <label class="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">${f.name}${desc}</label>
+                        <input type="text" class="field-input w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-sm text-slate-100 font-mono" value="${esc}" ${ro} ${ph} data-f="${f.name}" oninput="onText(this)">
+                    </div>
+                `;
+                } else {
+                    const mainCls = f.name === 'text' ? ' text-main font-medium' : ' bg-slate-900 text-slate-100';
+                    html += `
+                    <div class="mb-5">
+                        <label class="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">${f.name}${desc}${hint}</label>
+                        <textarea class="field-input w-full border border-slate-700 rounded-lg px-4 py-3 text-sm font-sans ${mainCls}" ${ro} ${ph} data-f="${f.name}" oninput="onText(this)">${esc}</textarea>
+                    </div>
+                `;
+                }
+            }
+        }
+
+    // Binary fields grouped into cards
+        const bins = FIELDS.filter(f => f.type === 'binary');
+        if (bins.length) {
+            const groups = {};
+            for (const f of bins) {
+                const g = f.group || 'Labels';
+                (groups[g] = groups[g] || []).push(f);
+            }
+
+            for (const [gname, fs] of Object.entries(groups)) {
+                html += `
+                <div class="bg-slate-900/70 border border-slate-700/80 rounded-xl p-5 mb-5">
+                    <div class="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-3 pb-2 border-b border-slate-700 flex items-center justify-between">
+                        <span><i class="fa-solid fa-list-check mr-1.5"></i> ${escHtml(gname)}</span>
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            `;
+
+                for (const f of fs) {
+                    const on = rec[f.name] === '1' || rec[f.name] === 1;
+                    html += `
+                    <label class="toggle${on ? ' on' : ''}" id="tg_${f.name}">
+                        <input type="checkbox" ${on ? 'checked' : ''} onchange="onBin('${f.name}', this.checked)">
+                        <span class="dot"></span>
+                        <span class="truncate">${escHtml(f.name)}</span>
+                    </label>
+                `;
+                }
+                html += `</div></div>`;
+            }
+        }
+
+        c.innerHTML = html;
+    }
+
+    function escHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
+    async function onText(el) {
+        const f = el.dataset.f;
+        if (CURRENT_RECORD) CURRENT_RECORD[f] = el.value;
+        setDirty(true);
+    }
+
+    async function onBin(name, checked) {
+        const val = checked ? '1' : '0';
+        if (CURRENT_RECORD) CURRENT_RECORD[name] = val;
+        const tg = document.getElementById('tg_' + name);
+        if (checked) tg.classList.add('on'); else tg.classList.remove('on');
+        setDirty(true);
+    }
+
+    function setDirty(d) {
+        dirty = d;
+        const el = document.getElementById('saveInd');
+        if (d) { el.textContent = '⏳ Unsaved…'; el.className = 'text-xs font-mono font-bold text-amber-400 min-w-[75px] text-right'; }
+        else { el.textContent = '✓ Saved'; el.className = 'text-xs font-mono font-bold text-emerald-400 min-w-[75px] text-right'; }
+        if (d) {
+            if (saveTimer) clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => doAutoSave(), 2000);
+        }
+    }
+
+    async function doAutoSave() {
+        // We no longer auto-save to DB on every keystroke, 
+        // to require explicit Submit or Skip.
+        setDirty(false);
+    }
+    
+    function showFlash(msg, colorClass) {
+        const el = document.getElementById('saveInd');
+        el.textContent = msg;
+        el.className = `text-xs font-mono font-bold ${colorClass} min-w-[75px] text-right`;
+        setTimeout(() => {
+            if (!dirty) {
+                el.textContent = '✓ Saved';
+                el.className = 'text-xs font-mono font-bold text-emerald-400 min-w-[75px] text-right';
+            }
+        }, 1500);
+    }
+
+    async function submitRecord() {
+        if (!CURRENT_RECORD) return;
+        
+        // Collect payload
+        const payload = {};
+        for (const f of FIELDS) {
+            if (!f.readonly && f.type !== 'auto_id') {
+                payload[f.name] = CURRENT_RECORD[f.name];
+            }
+        }
+        
+        const r = await fetch('/api/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                clean_line_id: CURRENT_RECORD.db_id,
+                annotation_type: ANN_TYPE,
+                payload: payload
+            })
+        });
+        
+        if (r.ok) {
+            const res = await r.json();
+            showFlash('✓ Submitted', 'text-emerald-400');
+            await loadState(res.next_index);
+        }
+    }
+
+    async function skipRecord() {
+        if (!CURRENT_RECORD) return;
+        
+        const r = await fetch('/api/skip', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                clean_line_id: CURRENT_RECORD.db_id,
+                annotation_type: ANN_TYPE
+            })
+        });
+        
+        if (r.ok) {
+            const res = await r.json();
+            showFlash('⏭ Skipped', 'text-amber-400');
+            await loadState(res.next_index);
+        }
+    }
+
+    async function nav(dir) {
+        const newIdx = IDX + dir;
+        if (newIdx >= 0 && newIdx < TOTAL) {
+            await loadState(newIdx);
+        }
+    }
+
+    async function jumpTo() {
+        const n = parseInt(document.getElementById('lineNum').value);
+        if (isNaN(n) || n < 1 || n > TOTAL) {
+            alert('Line out of range. Valid: 1 - ' + TOTAL);
+            document.getElementById('lineNum').value = IDX + 1;
+            return;
+        }
+        await loadState(n - 1);
+    }
+
+    async function addNew() {
+        await fetch('/api/add', { method: 'POST' });
+        await loadState(TOTAL);
+        document.querySelector('[data-f="text"]')?.focus();
+    }
+
+    async function delRec() {
+        if (!confirm('Delete current record? This action cannot be undone.')) return;
+        await fetch('/api/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ index: IDX })
+        });
+        await loadState(Math.max(0, IDX - 1));
+    }
+
+    function saveAs() {
+        const fmt = prompt('Choose format (csv / tsv / json):', 'csv');
+        if (!fmt) return;
+        window.open(`/api/save?format=${encodeURIComponent(fmt)}`, '_blank');
+    }
+
+    // Keyboard navigation
+    document.addEventListener('keydown', e => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+            if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveAs(); }
+            return;
+        }
+        if (e.key === 'ArrowLeft') nav(-1);
+        if (e.key === 'ArrowRight') nav(1);
+    });
+
+    init();
+</script>
+{% endblock %}

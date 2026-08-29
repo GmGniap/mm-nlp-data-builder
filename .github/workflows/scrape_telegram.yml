@@ -1,0 +1,38 @@
+name: Telegram Scraping Automation
+
+on:
+  workflow_dispatch:        # Allows manual trigger via GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r services/telegram_scraper/requirements.txt
+
+      - name: Run Telegram Scraper Bot
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          python services/telegram_scraper/scraper.py
+
+      - name: Commit & Push Updated Database (Optional)
+        if: success()
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action Bot"
+          git add shared_data.db || true
+          git commit -m "Automated Telegram scraping update" || true
+          git push || true

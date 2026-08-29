@@ -1,0 +1,33 @@
+# Telegram Scraping Configuration — Example / Template
+# Copy this to config.yaml and fill in your values.
+
+telegram:
+  api_id: "YOUR_TELEGRAM_API_ID"     # Obtain from https://my.telegram.org
+  api_hash: "YOUR_TELEGRAM_API_HASH"
+  session_name: "telegram_scraper"
+
+scraping:
+  channels:
+    - "durov"                         # Target Telegram channel username or ID
+  limit_per_channel: 50               # Max messages to fetch per channel per run
+  keywords_filter: []                 # Optional whitelist of keywords
+
+# ─── PostgreSQL (Neon) ─────────────────────────────────────────────────────
+# Single database for ALL tables (scraper + annotation).
+# Recommended: set NEON_DATABASE_URL as an environment variable (or .env)
+# rather than hardcoding the URL here.
+#
+# Scraper writes:  telegram_messages, scraping_logs
+# Cleaner writes:  clean_tele_text
+# Flask app reads: clean_tele_text, users, annotation_tags
+postgresql:
+  url: "postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require"
+  # Example:
+  #   url: "postgresql://alice:secret@ep-cool-name-12345.us-east-2.aws.neon.tech/neondb?sslmode=require"
+
+# ─── Cleaner Pipeline ──────────────────────────────────────────────────────
+cleaner:
+  # Optional: path to a custom "syllable<space>potema" bigram dictionary file
+  # (one entry per line, same format as 1syl.potma.dict used by my-linebreak.pl).
+  # If null, the built-in Myanmar bigram list is used.
+  dict_path: null
