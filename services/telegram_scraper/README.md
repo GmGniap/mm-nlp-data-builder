@@ -7,13 +7,13 @@ This service provides an automated, config-driven Telegram channel scraper using
 ## 📐 Architecture — Two-Database Design
 
 ```
-scraper.py ──writes──► SQLite (polar_tele.db)
+scraper.py ──writes──► Postgresql (main_data)
                               │
                         cleaner.py reads raw TelegramMessage rows
                               │
                          splits into Myanmar sentences
                               │
-                              └──writes──► Neon PostgreSQL (CleanTeleText)
+                              └──writes──► PostgreSQL (clean_data)
                                                   │
                                          Flask annotation app reads
 ```
@@ -27,7 +27,6 @@ Separating the write path eliminates SQLite lock contention between the scraper 
 ```
 .
 ├── config.example.yaml     # Template configuration file
-├── config.yaml             # Your local active configuration (channels, API ID/hash, Neon URL)
 ├── login_telegram.py       # One-time interactive terminal login script
 ├── scraper.py              # Main scraping script with Telethon & fallback stub mode
 ├── cleaner.py              # Myanmar sentence splitter & Neon PostgreSQL uploader
@@ -50,7 +49,7 @@ uv run python services/telegram_scraper/login_telegram.py
 ```
 
 ### Step 2: Complete the Prompts
-1. Enter your phone number with country code (e.g., `+959123456789`).
+1. Enter your phone number with country code (e.g., `+619123456789`).
 2. Enter the login code Telegram sends to your Telegram app / SMS.
 3. If you have 2-Factor Authentication enabled, enter your password.
 
