@@ -171,7 +171,7 @@ async def scrape_channel_for_window(client, channel, day_start: datetime, day_en
     return messages_in_window
 
 
-async def run_scraper(dry_run: bool = False, lookback_days: int = 2):
+async def run_scraper(dry_run: bool = False, lookback_days: int = 2, force: bool = False):
     config  = load_config()
 
     api_id   = os.getenv("TELEGRAM_API_ID")  or config["telegram"].get("api_id")
@@ -191,6 +191,7 @@ async def run_scraper(dry_run: bool = False, lookback_days: int = 2):
     print(f"  Channels     : {channels}")
     print(f"  Lookback days: {lookback_days}  ({day_windows[0][0]} → {day_windows[-1][0]})")
     print(f"  Dry-run      : {dry_run}")
+    print(f"  Force        : {force}")
     print("=" * 65)
 
     storage = StorageHandler(pg_url=pg_url)
@@ -203,7 +204,7 @@ async def run_scraper(dry_run: bool = False, lookback_days: int = 2):
 
     if is_placeholder:
         print("[!] API credentials are placeholders — running in simulated mode.\n")
-        _run_simulated(storage, channels, day_windows, dry_run)
+        _run_simulated(storage, channels, day_windows, dry_run, force)
         storage.close()
         return
 
@@ -231,24 +232,24 @@ async def run_scraper(dry_run: bool = False, lookback_days: int = 2):
         for run_date, day_start, day_end in day_windows:
             await _process_day(
                 client, storage, channels, run_date,
-                day_start, day_end, limit, dry_run
+                day_start, day_end, limit, dry_run, force
             )
 
         await client.disconnect()
 
     except Exception as e:
         print(f"[!] Telegram connection error: {e}\n    Falling back to simulated mode.")
-        _run_simulated(storage, channels, day_windows, dry_run)
+        _run_simulated(storage, channels, day_windows, dry_run, force)
 
     storage.close()
 
 
 async def _process_day(client, storage, channels: list,
                        run_date: str, day_start: datetime, day_end: datetime,
-                       limit: int, dry_run: bool):
+                       limit: int, dry_run: bool, force: bool):
     """
     Scrape one calendar day across all configured channels.
-    Idempotent: skips the day if a 'completed' watermark already exists.
+    Idempotent: skips the day if a 'completed' watermark already exists unless force=True.
     """
     print(f"\n📅  Processing day: {run_date}  [{day_start.isoformat()} → {day_end.isoformat()}]")
 
@@ -259,12 +260,19 @@ async def _process_day(client, storage, channels: list,
 
     for channel in channels:
         print(f"  [*] Scraping channel {channel} ...")
-        
-        if not dry_run and storage.channel_day_already_scraped(str(channel), run_date):
+
+        if not dry_run and not force and storage.channel_day_already_scraped(str(channel), run_date):
             print(f"      ✅ Watermark found — channel {channel} for day {run_date} already completed, skipping.")
             continue
 
-        log = None if dry_run else storage.start_scraping_log(str(channel), run_date, day_start, day_end)
+        if not dry_run:
+            if force:
+                deleted = storage.delete_messages_for_channel_window(str(channel), day_start, day_end)
+                if deleted:
+                    print(f"      --force: deleted {deleted} existing messages for {channel} in window.")
+            log = storage.start_scraping_log(str(channel), run_date, day_start, day_end, force=force)
+        else:
+            log = None
 
         msgs = await scrape_channel_for_window(client, channel, day_start, day_end, limit)
         print(f"      Found {len(msgs)} messages in window.")
@@ -285,7 +293,7 @@ async def _process_day(client, storage, channels: list,
         print(f"  ✔  Day {run_date} complete — Saved={total_saved}, Skipped={total_skipped}")
 
 
-def _run_simulated(storage, channels: list, day_windows: list, dry_run: bool):
+def _run_simulated(storage, channels: list, day_windows: list, dry_run: bool, force: bool):
     """Stub fallback mode — generates sample messages per day window."""
     for run_date, day_start, day_end in day_windows:
         print(f"\n📅  [Simulated] Processing day: {run_date}")
@@ -294,11 +302,17 @@ def _run_simulated(storage, channels: list, day_windows: list, dry_run: bool):
         simulated_skipped = 0
 
         for ch in channels:
-            if not dry_run and storage.channel_day_already_scraped(str(ch), run_date):
+            if not dry_run and not force and storage.channel_day_already_scraped(str(ch), run_date):
                 print(f"  ✅ Watermark found — channel {ch} for {run_date} already completed, skipping.")
                 continue
 
-            log = None if dry_run else storage.start_scraping_log(str(ch), run_date, day_start, day_end)
+            if not dry_run:
+                if force:
+                    storage.delete_messages_for_channel_window(str(ch), day_start, day_end)
+                log = storage.start_scraping_log(str(ch), run_date, day_start, day_end, force=force)
+            else:
+                log = None
+
             simulated = []
             for i in range(1, 4):
                 simulated.append({
@@ -342,6 +356,9 @@ Examples:
   # Backfill last 7 days
   uv run python services/telegram_scraper/scraper.py --lookback 7
 
+  # Re-scrape and overwrite existing data for last 7 days
+  uv run python services/telegram_scraper/scraper.py --lookback 7 --force
+
   # Backfill last 30 days (dry-run preview)
   uv run python services/telegram_scraper/scraper.py --lookback 30 --dry-run
         """
@@ -349,6 +366,10 @@ Examples:
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Preview scraping without writing to DB"
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Re-scrape already-completed channel-day windows (overwrites existing messages)"
     )
     parser.add_argument(
         "--lookback", type=int, default=2, metavar="DAYS",
@@ -359,4 +380,5 @@ Examples:
     if args.lookback < 1:
         parser.error("--lookback must be at least 1")
 
-    asyncio.run(run_scraper(dry_run=args.dry_run, lookback_days=args.lookback))
+    asyncio.run(run_scraper(dry_run=args.dry_run, lookback_days=args.lookback, force=args.force))
+

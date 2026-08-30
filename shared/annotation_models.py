@@ -115,23 +115,24 @@ class CleanTeleText(AnnotationBase):
 
 class CleaningLog(AnnotationBase):
     """
-    Day-level watermark for the cleaner pipeline.
+    Day-level watermark for the cleaner pipeline for a specific channel.
 
-    One row per calendar day (run_date = 'YYYY-MM-DD').  The cleaner
-    writes a 'running' row at the start of each day's pass and updates
+    One row per channel and calendar day (run_date = 'YYYY-MM-DD'). The cleaner
+    writes a 'running' row at the start of each channel-day's pass and updates
     it to 'completed' (or 'failed') when done.
 
     A 'completed' row acts as an idempotency guard: the cleaner skips
-    that day entirely on subsequent runs unless --force is supplied,
-    which deletes the existing row and all associated CleanTeleText rows
+    that channel-day entirely on subsequent runs unless --force is supplied,
+    which deletes the existing row and associated CleanTeleText rows
     before re-processing.
     """
     __tablename__ = "cleaning_logs"
     __table_args__ = (
-        UniqueConstraint("run_date", name="uq_cleaning_run_date"),
+        UniqueConstraint("channel_name", "run_date", name="uq_cleaning_channel_rundate"),
     )
 
     id                  = Column(Integer, primary_key=True)
+    channel_name        = Column(String(100), nullable=False, index=True)
     # YYYY-MM-DD date of the TelegramMessage.date window being cleaned
     run_date            = Column(String(10), nullable=False, index=True)
     status              = Column(String(20), nullable=False, default="running")
@@ -147,9 +148,10 @@ class CleaningLog(AnnotationBase):
 
     def __repr__(self) -> str:
         return (
-            f"<CleaningLog {self.run_date} status={self.status} "
+            f"<CleaningLog {self.channel_name}:{self.run_date} status={self.status} "
             f"msgs={self.messages_processed} sents={self.sentences_generated}>"
         )
+
 
 
 class AnnotationResult(AnnotationBase):
