@@ -291,8 +291,18 @@
             }
 
             for (const [gname, fs] of Object.entries(groups)) {
+                let groupStyle = '';
+                let groupId = `group_${gname.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                
+                if (ANN_TYPE === 'polarization' && gname.includes('Sub-Task 3')) {
+                    const polVal = rec['polarization'];
+                    if (polVal !== '1' && polVal !== 1) {
+                        groupStyle = 'display: none;';
+                    }
+                }
+
                 html += `
-                <div class="bg-slate-900/70 border border-slate-700/80 rounded-xl p-5 mb-5">
+                <div id="${groupId}" class="bg-slate-900/70 border border-slate-700/80 rounded-xl p-5 mb-5" style="${groupStyle}">
                     <div class="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-3 pb-2 border-b border-slate-700 flex items-center justify-between">
                         <span><i class="fa-solid fa-list-check mr-1.5"></i> ${escHtml(gname)}</span>
                     </div>
@@ -329,6 +339,38 @@
         if (CURRENT_RECORD) CURRENT_RECORD[name] = val;
         const tg = document.getElementById('tg_' + name);
         if (checked) tg.classList.add('on'); else tg.classList.remove('on');
+        
+        if (ANN_TYPE === 'polarization' && name === 'polarization') {
+            const bins = FIELDS.filter(f => f.type === 'binary');
+            const groups = {};
+            for (const f of bins) {
+                const g = f.group || 'Labels';
+                (groups[g] = groups[g] || []).push(f);
+            }
+            
+            for (const gname of Object.keys(groups)) {
+                if (gname.includes('Sub-Task 3')) {
+                    const groupId = `group_${gname.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                    const groupEl = document.getElementById(groupId);
+                    if (groupEl) {
+                        groupEl.style.display = checked ? 'block' : 'none';
+                    }
+                    
+                    if (!checked && CURRENT_RECORD) {
+                        for (const f of groups[gname]) {
+                            CURRENT_RECORD[f.name] = '0';
+                            const subTg = document.getElementById('tg_' + f.name);
+                            if (subTg) {
+                                subTg.classList.remove('on');
+                                const subInput = subTg.querySelector('input');
+                                if (subInput) subInput.checked = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         setDirty(true);
     }
 
@@ -368,7 +410,15 @@
         const payload = {};
         for (const f of FIELDS) {
             if (!f.readonly && f.type !== 'auto_id') {
-                payload[f.name] = CURRENT_RECORD[f.name];
+                let val = CURRENT_RECORD[f.name];
+                
+                if (ANN_TYPE === 'polarization' && f.group && f.group.includes('Sub-Task 3')) {
+                    if (CURRENT_RECORD['polarization'] !== '1' && CURRENT_RECORD['polarization'] !== 1) {
+                        val = '0';
+                    }
+                }
+                
+                payload[f.name] = val;
             }
         }
 

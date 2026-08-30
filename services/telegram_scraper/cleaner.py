@@ -3,15 +3,15 @@ cleaner.py — Myanmar Sentence Cleaner & Annotation DB Uploader
 ===============================================================
 Pipeline:
   1. Read TelegramMessage rows from Neon PostgreSQL (scraper DB) for a given
-     day window (filtered by TelegramMessage.date).
+     channel and day window (filtered by TelegramMessage.channel_name and date).
   2. Split each message's text into individual Myanmar sentences using a
      regex-based algorithm ported from Dr. Ye Kyaw Thu's my-linebreak.pl
      (https://github.com/ye-kyaw-thu/tools/blob/master/perl/my-linebreak.pl).
   3. Write CleanTeleText rows to Neon PostgreSQL (annotation tables).
      Both read and write use the same Neon PostgreSQL connection string
      (NEON_DATABASE_URL / config postgresql.url).
-  4. Record a CleaningLog watermark row per calendar day so subsequent
-     runs are idempotent and can be backfilled for any date range.
+  4. Record a CleaningLog watermark row per channel and calendar day so
+     subsequent runs are idempotent and can be backfilled for any date range.
 
 Imports
 -------
@@ -20,8 +20,11 @@ Imports
 
 Usage
 -----
-    # Default incremental: cleans all messages after the latest watermark date
+    # Default incremental: cleans all channels after their latest watermark date
     uv run python services/telegram_scraper/cleaner.py
+
+    # Clean a single channel incrementally
+    uv run python services/telegram_scraper/cleaner.py --channel shweba000
 
     # Dry-run preview
     uv run python services/telegram_scraper/cleaner.py --dry-run
@@ -135,14 +138,14 @@ def split_myanmar_sentences(
     paragraph: str,
     bigrams: list[str] | None = None,
 ) -> list[str]:
-    """
+    r"""
     Split a Myanmar paragraph into individual sentences.
 
     Algorithm (my-linebreak.pl by Dr.Ye Kyaw Thu):
       1. Process each line independently.
-      2. Strip leading/trailing whitespace.       → Perl: s/^\\s+|\\s+$//g
+      2. Strip leading/trailing whitespace.       → Perl: s/^\s+|\s+$//g
       3. Collapse multiple spaces.                → Perl: s/ +/ /g
-      4. Insert \\n after every matched bigram.   → Perl: s/($re)/$1\\n/g
+      4. Insert \n after every matched bigram.   → Perl: s/($re)/$1\n/g
       5. Split on newlines, discard empty.
     """
     if not paragraph or not paragraph.strip():
@@ -207,14 +210,17 @@ def get_pg_engine(pg_url: str):
     return create_engine(pg_url, pool_pre_ping=True)
 
 
-def get_latest_cleaned_date(session) -> date | None:
+def get_latest_cleaned_date(session, channel_name: str) -> date | None:
     """
-    Return the most recent run_date that has a 'completed' CleaningLog entry,
-    or None if no cleaning has been done yet.
+    Return the most recent run_date that has a 'completed' CleaningLog entry
+    for the given channel, or None if no cleaning has been done yet.
     """
     result = (
         session.query(func.max(CleaningLog.run_date))
-        .filter(CleaningLog.status == "completed")
+        .filter(
+            CleaningLog.channel_name == channel_name,
+            CleaningLog.status == "completed",
+        )
         .scalar()
     )
     if result is None:
@@ -222,19 +228,20 @@ def get_latest_cleaned_date(session) -> date | None:
     return datetime.strptime(result, "%Y-%m-%d").date()
 
 
-def start_cleaning_log(session, run_date: str, force: bool = False) -> CleaningLog:
+def start_cleaning_log(session, channel_name: str, run_date: str, force: bool = False) -> CleaningLog:
     """
-    Insert a 'running' CleaningLog row for the given run_date.
+    Insert a 'running' CleaningLog row for the given channel_name and run_date.
     If force=True and a row already exists, it is deleted first.
     """
     if force:
-        session.query(CleaningLog).filter_by(run_date=run_date).delete()
+        session.query(CleaningLog).filter_by(channel_name=channel_name, run_date=run_date).delete()
         session.flush()
 
     entry = CleaningLog(
+        channel_name=channel_name,
         run_date=run_date,
         status="running",
-        cleaning_start_ts=datetime.utcnow(),
+        cleaning_start_ts=datetime.now(datetime.UTC),
     )
     session.add(entry)
     session.flush()
@@ -253,33 +260,35 @@ def finish_cleaning_log(
     entry.messages_processed  = messages_processed
     entry.messages_skipped    = messages_skipped
     entry.sentences_generated = sentences_generated
-    entry.cleaning_end_ts     = datetime.utcnow()
+    entry.cleaning_end_ts     = datetime.now(datetime.UTC),
     entry.status              = status
     session.flush()
 
 
-def day_already_completed(session, run_date: str) -> bool:
-    """Return True if a 'completed' CleaningLog row exists for run_date."""
+def channel_day_already_completed(session, channel_name: str, run_date: str) -> bool:
+    """Return True if a 'completed' CleaningLog row exists for (channel_name, run_date)."""
     return (
         session.query(CleaningLog)
-        .filter_by(run_date=run_date, status="completed")
+        .filter_by(channel_name=channel_name, run_date=run_date, status="completed")
         .count() > 0
     )
 
 
-def iter_messages_for_window(
+def iter_messages_for_channel_window(
     session,
+    channel_name: str,
     day_start: datetime,
     day_end: datetime,
 ) -> Generator[TelegramMessage, None, None]:
     """
-    Yield TelegramMessage rows whose date falls within [day_start, day_end].
+    Yield TelegramMessage rows for a specific channel whose date falls within [day_start, day_end].
     Messages with NULL dates are skipped (they have no calendar day).
     Only messages with non-empty text are yielded.
     """
     query = (
         session.query(TelegramMessage)
         .filter(
+            TelegramMessage.channel_name == channel_name,
             TelegramMessage.date.isnot(None),
             TelegramMessage.date >= day_start,
             TelegramMessage.date <= day_end,
@@ -296,8 +305,9 @@ def iter_messages_for_window(
 # Core pipeline
 # ===========================================================================
 
-def _process_day(
+def _process_channel_day(
     session,
+    channel_name: str,
     run_date: str,
     day_start: datetime,
     day_end: datetime,
@@ -306,16 +316,15 @@ def _process_day(
     force: bool,
 ) -> dict:
     """
-    Clean all TelegramMessages for a single calendar day.
+    Clean all TelegramMessages for a single channel and calendar day.
 
-    Returns a stats dict: {msgs_processed, msgs_skipped, sentences_generated}.
+    Returns a stats dict: {msgs_processed, msgs_skipped, sentences_generated, skipped_day}.
     """
-    log.info("📅  Processing day: %s  [%s → %s]", run_date, day_start.isoformat(), day_end.isoformat())
-    print(f"\n📅  Processing day: {run_date}  [{day_start.date()} → {day_end.date()}]")
+    log.info("  Processing channel: %s for day: %s [%s → %s]", channel_name, run_date, day_start.isoformat(), day_end.isoformat())
 
     # --- Watermark check (skip if already done and not forcing) ---
-    if not dry_run and not force and day_already_completed(session, run_date):
-        msg_text = f"  ✅ Watermark found — {run_date} already completed, skipping."
+    if not dry_run and not force and channel_day_already_completed(session, channel_name, run_date):
+        msg_text = f"    ✅ Watermark found — channel {channel_name} on {run_date} already completed, skipping."
         log.info(msg_text)
         print(msg_text)
         return {"msgs_processed": 0, "msgs_skipped": 0, "sentences_generated": 0, "skipped_day": True}
@@ -323,36 +332,38 @@ def _process_day(
     # --- Start log row ---
     cleaning_entry = None
     if not dry_run:
-        cleaning_entry = start_cleaning_log(session, run_date, force=force)
+        cleaning_entry = start_cleaning_log(session, channel_name, run_date, force=force)
 
-        # On force: delete all existing CleanTeleText rows for messages in this window
+        # On force: delete all existing CleanTeleText rows for this channel in this window
         if force:
-            msg_ids = [
-                m.id for m in session.query(TelegramMessage.id).filter(
-                    TelegramMessage.date.isnot(None),
-                    TelegramMessage.date >= day_start,
-                    TelegramMessage.date <= day_end,
+            msg_ids_query = session.query(TelegramMessage.id).filter(
+                TelegramMessage.channel_name == channel_name,
+                TelegramMessage.date.isnot(None),
+                TelegramMessage.date >= day_start,
+                TelegramMessage.date <= day_end,
+            )
+            deleted = (
+                session.query(CleanTeleText)
+                .filter(
+                    CleanTeleText.channel_name == channel_name,
+                    CleanTeleText.telegram_message_id.in_(msg_ids_query),
                 )
-            ]
-            if msg_ids:
-                deleted = (
-                    session.query(CleanTeleText)
-                    .filter(CleanTeleText.telegram_message_id.in_(msg_ids))
-                    .delete(synchronize_session=False)
-                )
-                log.info("  --force: deleted %d existing CleanTeleText rows for %s.", deleted, run_date)
+                .delete(synchronize_session=False)
+            )
+            if deleted:
+                log.info("  --force: deleted %d existing CleanTeleText rows for channel %s on %s.", deleted, channel_name, run_date)
 
     # --- Process messages ---
     msgs_processed  = 0
     msgs_skipped    = 0
     sentences_generated = 0
 
-    for msg in iter_messages_for_window(session, day_start, day_end):
+    for msg in iter_messages_for_channel_window(session, channel_name, day_start, day_end):
         sentences = split_myanmar_sentences(msg.message_text, bigrams=bigrams)
 
         if not sentences:
             msgs_skipped += 1
-            log.debug("Message id=%d produced no sentences — skipped.", msg.id)
+            log.debug("Message id=%d (channel=%s) produced no sentences — skipped.", msg.id, channel_name)
             continue
 
         msgs_processed += 1
@@ -396,6 +407,7 @@ def _process_day(
 
 def clean_and_upload(
     config: dict,
+    channel: str | None = None,
     dry_run: bool = False,
     force: bool = False,
     dict_path: str | None = None,
@@ -407,11 +419,12 @@ def clean_and_upload(
 
     Args:
         config:     Loaded YAML config dict.
+        channel:    Optional channel name to restrict cleaning to.
         dry_run:    Preview splits without writing to PostgreSQL.
         force:      Re-process days even if they have a 'completed' watermark.
         dict_path:  Path to a custom bigram dictionary file.
         from_date:  YYYY-MM-DD start of the day range to clean (inclusive).
-                    Defaults to the day after the latest completed watermark.
+                    Defaults to the day after the latest completed watermark per channel.
         to_date:    YYYY-MM-DD end of the day range to clean (inclusive).
                     Defaults to today (UTC).
     """
@@ -450,90 +463,120 @@ def clean_and_upload(
 
     try:
         # ------------------------------------------------------------------
-        # Resolve date window
+        # Resolve target channels
         # ------------------------------------------------------------------
-        today_utc = datetime.now(timezone.utc).date()
-
-        resolved_from: date
-        resolved_to: date = _to_date(to_date) or today_utc
-
-        if from_date:
-            resolved_from = _to_date(from_date)
+        if channel:
+            channels = [str(channel)]
         else:
-            latest = get_latest_cleaned_date(session)
-            if latest is None:
-                # No watermark yet → process everything from the earliest message date
-                earliest = session.query(func.min(TelegramMessage.date)).scalar()
-                if earliest is None:
-                    log.info("No TelegramMessage rows found. Nothing to clean.")
-                    print("No TelegramMessage rows found. Nothing to clean.")
-                    return
-                resolved_from = earliest.date() if hasattr(earliest, "date") else earliest
-                log.info("No previous watermark found. Starting from earliest message date: %s", resolved_from)
-            else:
-                resolved_from = latest + timedelta(days=1)
-                log.info("Incremental mode: latest completed date = %s. Cleaning from %s.", latest, resolved_from)
+            channels = [str(ch) for ch in config.get("scraping", {}).get("channels", [])]
+            if not channels:
+                db_channels = session.query(TelegramMessage.channel_name).distinct().all()
+                channels = [ch[0] for ch in db_channels if ch[0]]
 
-        if resolved_from > resolved_to:
-            print(f"✅  Already up-to-date (latest completed: {resolved_from - timedelta(days=1)}).")
-            log.info("No new days to process (from=%s > to=%s).", resolved_from, resolved_to)
+        if not channels:
+            log.info("No channels configured or found in database. Nothing to clean.")
+            print("No channels configured or found in database. Nothing to clean.")
             return
 
-        day_windows = build_day_windows(resolved_from, resolved_to)
+        today_utc = datetime.now(timezone.utc).date()
+        resolved_to: date = _to_date(to_date) or today_utc
 
         # ------------------------------------------------------------------
         # Print run header
         # ------------------------------------------------------------------
         print("=" * 65)
-        print("  🧹 Myanmar Sentence Cleaner")
+        print("  🧹 Myanmar Sentence Cleaner (Per-Channel Watermark)")
         print("=" * 65)
-        print(f"  Date range  : {resolved_from} → {resolved_to}  ({len(day_windows)} day(s))")
+        print(f"  Channels    : {channels}")
+        print(f"  To Date     : {resolved_to}")
         print(f"  Dry-run     : {dry_run}")
         print(f"  Force       : {force}")
         print(f"  Bigram dict : {'custom' if effective_dict else 'built-in'}")
         print("=" * 65)
 
-        # ------------------------------------------------------------------
-        # Process each day
-        # ------------------------------------------------------------------
-        total_days_run  = 0
-        total_days_skip = 0
         grand_msgs      = 0
         grand_skipped   = 0
         grand_sents     = 0
+        total_days_run  = 0
+        total_days_skip = 0
 
-        for run_date, day_start, day_end in day_windows:
-            stats = _process_day(
-                session=session,
-                run_date=run_date,
-                day_start=day_start,
-                day_end=day_end,
-                bigrams=bigrams,
-                dry_run=dry_run,
-                force=force,
-            )
+        # ------------------------------------------------------------------
+        # Process each channel
+        # ------------------------------------------------------------------
+        for ch in channels:
+            print(f"\n📢  Channel: {ch}")
+            log.info("Starting cleaning for channel: %s", ch)
 
-            if stats.get("skipped_day"):
-                total_days_skip += 1
+            resolved_from: date
+            if from_date:
+                resolved_from = _to_date(from_date)
+            else:
+                latest = get_latest_cleaned_date(session, ch)
+                if latest is None:
+                    earliest = (
+                        session.query(func.min(TelegramMessage.date))
+                        .filter(TelegramMessage.channel_name == ch)
+                        .scalar()
+                    )
+                    if earliest is None:
+                        print(f"  ℹ️  No TelegramMessage rows found for {ch}. Skipping channel.")
+                        log.info("No messages for channel %s.", ch)
+                        continue
+                    resolved_from = earliest.date() if hasattr(earliest, "date") else earliest
+                    log.info("Channel %s: starting from earliest message date: %s", ch, resolved_from)
+                else:
+                    resolved_from = latest + timedelta(days=1)
+                    log.info("Channel %s incremental mode: latest completed = %s. Cleaning from %s.", ch, latest, resolved_from)
+
+            if resolved_from > resolved_to:
+                print(f"  ✅ Channel {ch} already up-to-date (latest completed: {resolved_from - timedelta(days=1)}).")
+                log.info("Channel %s is up-to-date (from=%s > to=%s).", ch, resolved_from, resolved_to)
                 continue
 
-            total_days_run  += 1
-            grand_msgs      += stats["msgs_processed"]
-            grand_skipped   += stats["msgs_skipped"]
-            grand_sents     += stats["sentences_generated"]
+            day_windows = build_day_windows(resolved_from, resolved_to)
+            print(f"  Date range  : {resolved_from} → {resolved_to}  ({len(day_windows)} day(s))")
 
-            tag = "[DRY-RUN] " if dry_run else ""
-            print(
-                f"  {tag}✔  {run_date}: "
-                f"msgs_processed={stats['msgs_processed']}  "
-                f"msgs_skipped={stats['msgs_skipped']}  "
-                f"sentences={stats['sentences_generated']}"
-            )
-            log.info(
-                "%s%s: processed=%d skipped=%d sentences=%d",
-                tag, run_date,
-                stats["msgs_processed"], stats["msgs_skipped"], stats["sentences_generated"],
-            )
+            ch_msgs = 0
+            ch_skipped = 0
+            ch_sents = 0
+
+            for run_date, day_start, day_end in day_windows:
+                stats = _process_channel_day(
+                    session=session,
+                    channel_name=ch,
+                    run_date=run_date,
+                    day_start=day_start,
+                    day_end=day_end,
+                    bigrams=bigrams,
+                    dry_run=dry_run,
+                    force=force,
+                )
+
+                if stats.get("skipped_day"):
+                    total_days_skip += 1
+                    continue
+
+                total_days_run  += 1
+                ch_msgs         += stats["msgs_processed"]
+                ch_skipped      += stats["msgs_skipped"]
+                ch_sents        += stats["sentences_generated"]
+
+                tag = "[DRY-RUN] " if dry_run else ""
+                print(
+                    f"    {tag}✔  {run_date}: "
+                    f"msgs_processed={stats['msgs_processed']}  "
+                    f"msgs_skipped={stats['msgs_skipped']}  "
+                    f"sentences={stats['sentences_generated']}"
+                )
+                log.info(
+                    "%s[%s] %s: processed=%d skipped=%d sentences=%d",
+                    tag, ch, run_date,
+                    stats["msgs_processed"], stats["msgs_skipped"], stats["sentences_generated"],
+                )
+
+            grand_msgs    += ch_msgs
+            grand_skipped += ch_skipped
+            grand_sents   += ch_sents
 
         # ------------------------------------------------------------------
         # Summary
@@ -542,11 +585,12 @@ def clean_and_upload(
         print("=" * 65)
         print("  Summary")
         print("=" * 65)
-        print(f"  Days processed : {total_days_run}")
-        print(f"  Days skipped   : {total_days_skip}  (already completed)")
-        print(f"  Msgs processed : {grand_msgs}")
-        print(f"  Msgs skipped   : {grand_skipped}  (empty after splitting)")
-        print(f"  Sentences gen  : {grand_sents}")
+        print(f"  Channels evaluated : {len(channels)}")
+        print(f"  Channel-days run   : {total_days_run}")
+        print(f"  Channel-days skip  : {total_days_skip}  (already completed)")
+        print(f"  Msgs processed     : {grand_msgs}")
+        print(f"  Msgs skipped       : {grand_skipped}  (empty after splitting)")
+        print(f"  Sentences generated: {grand_sents}")
         print("=" * 65)
 
         log.info(
@@ -567,14 +611,17 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Myanmar sentence cleaner: splits TelegramMessage paragraphs "
             "and uploads CleanTeleText rows to Neon PostgreSQL.\n\n"
-            "By default runs incrementally: finds the latest completed "
-            "CleaningLog watermark and processes all newer messages."
+            "By default runs incrementally per channel: finds each channel's latest "
+            "completed CleaningLog watermark and processes newer messages."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Incremental (default): process messages since last completed watermark
+  # Incremental (default): process messages since last completed watermark per channel
   uv run python services/telegram_scraper/cleaner.py
+
+  # Process a specific channel only
+  uv run python services/telegram_scraper/cleaner.py --channel shweba000
 
   # Dry-run preview of incremental pass
   uv run python services/telegram_scraper/cleaner.py --dry-run
@@ -594,6 +641,8 @@ Examples:
     )
     parser.add_argument("--config", default="config.yaml",
                         help="Config file name (default: config.yaml).")
+    parser.add_argument("--channel", "-c", default=None, metavar="NAME",
+                        help="Specific channel name to clean (default: all channels in config/DB).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview splits without writing to PostgreSQL.")
     parser.add_argument("--force", action="store_true",
@@ -638,9 +687,11 @@ if __name__ == "__main__":
     cfg = load_config(args.config)
     clean_and_upload(
         config=cfg,
+        channel=args.channel,
         dry_run=args.dry_run,
         force=args.force,
         dict_path=args.dict,
         from_date=resolved_from_date,
         to_date=args.to_date,
     )
+

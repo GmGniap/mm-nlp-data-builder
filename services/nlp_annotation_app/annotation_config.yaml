@@ -64,7 +64,7 @@ fields:
     type: binary
     group: "Sub-Task 1 & 2: Polarization Type"
 
-  # --- Sub-Task 3: Severity ---
+  # --- Sub-Task 3: Severity or Polarization Manifestation ---
   - name: stereotype
     type: binary
     group: "Sub-Task 3: Severity"

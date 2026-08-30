@@ -168,6 +168,7 @@ class CleaningLog(db.Model):
 
     # --- Columns (mirrored from shared/annotation_models.py → CleaningLog) ---
     id                  = _col(_SharedCleaningLog, "id")
+    channel_name        = _col(_SharedCleaningLog, "channel_name")
     run_date            = _col(_SharedCleaningLog, "run_date")
     status              = _col(_SharedCleaningLog, "status")
     messages_processed  = _col(_SharedCleaningLog, "messages_processed")
@@ -179,7 +180,7 @@ class CleaningLog(db.Model):
 
     def __repr__(self) -> str:
         return (
-            f"<CleaningLog {self.run_date} status={self.status} "
+            f"<CleaningLog {self.channel_name}:{self.run_date} status={self.status} "
             f"msgs={self.messages_processed} sents={self.sentences_generated}>"
         )
 

@@ -60,6 +60,26 @@ class StorageHandler:
         self.session.commit()
         return saved_count, skipped_count
 
+    def delete_messages_for_channel_window(self, channel_name: str,
+                                            day_start: datetime,
+                                            day_end: datetime) -> int:
+        """
+        Delete existing TelegramMessage records for a channel within [day_start, day_end].
+        Used when --force is supplied. Returns number of rows deleted.
+        """
+        deleted = (
+            self.session.query(TelegramMessage)
+            .filter(
+                TelegramMessage.channel_name == channel_name,
+                TelegramMessage.date.isnot(None),
+                TelegramMessage.date >= day_start,
+                TelegramMessage.date <= day_end,
+            )
+            .delete(synchronize_session=False)
+        )
+        self.session.commit()
+        return deleted
+
     # -------------------------------------------------------------------------
     # Watermark / ScrapingLog helpers
     # -------------------------------------------------------------------------
@@ -78,11 +98,11 @@ class StorageHandler:
 
     def start_scraping_log(self, channel_name: str, run_date: str,
                            scrape_start_ts: datetime,
-                           scrape_end_ts: datetime) -> ScrapingLog:
+                           scrape_end_ts: datetime,
+                           force: bool = False) -> ScrapingLog:
         """
         Upsert a ScrapingLog row for (channel_name, run_date) and mark it 'running'.
-        If a previous failed row exists it is reused; otherwise a new row
-        is created.
+        If force=True, any existing row is reset.
         """
         log = self.session.query(ScrapingLog).filter_by(
             channel_name=channel_name,
@@ -100,6 +120,9 @@ class StorageHandler:
             log.scrape_start_ts = scrape_start_ts
             log.scrape_end_ts   = scrape_end_ts
             log.run_started_at  = datetime.now(timezone.utc)
+            log.messages_scraped = 0
+            log.messages_saved   = 0
+            log.messages_skipped = 0
 
         log.status          = 'running'
         log.run_finished_at = None
