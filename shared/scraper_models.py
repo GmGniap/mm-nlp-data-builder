@@ -23,7 +23,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger, Column, DateTime, Integer, String, Text, UniqueConstraint,
-    create_engine,
+    create_engine, text,
 )
 from sqlalchemy.orm import declarative_base
 
@@ -73,8 +73,13 @@ class ScrapingLog(ScraperBase):
         return f"<ScrapingLog {self.run_date} status={self.status}>"
 
 
-def init_scraper_db(pg_url: str):
-    """Connect to Neon PostgreSQL and create scraper-owned tables only."""
+def init_scraper_db(pg_url: str, schema: str = "public"):
+    """Connect to Neon PostgreSQL and create scraper-owned tables only in the target schema."""
     engine = create_engine(pg_url, pool_pre_ping=True)
-    ScraperBase.metadata.create_all(engine)
-    return engine
+    if schema and schema != "public":
+        with engine.connect() as conn:
+            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+            conn.commit()
+    schema_engine = engine.execution_options(schema_translate_map={None: schema})
+    ScraperBase.metadata.create_all(schema_engine)
+    return schema_engine

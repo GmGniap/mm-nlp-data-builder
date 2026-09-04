@@ -33,16 +33,35 @@ load_dotenv()
 
 
 # =============================================================================
-# Config Loader
+# Config Loader & Environment Helper
 # =============================================================================
 
-def load_config(config_file="config.yaml"):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    target_path = os.path.join(base_dir, config_file)
+def load_config(config_file=None):
+    if not config_file:
+        config_file = os.getenv("CONFIG_PATH", "config.yaml")
+    if os.path.isabs(config_file):
+        target_path = config_file
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        target_path = os.path.join(base_dir, config_file)
     if not os.path.exists(target_path):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
         target_path = os.path.join(base_dir, "config.example.yaml")
     with open(target_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def resolve_environment_and_schema(config: dict, env_override: str = None) -> tuple[str, str]:
+    """
+    Resolve environment ('dev' or 'prod') and corresponding PostgreSQL schema
+    ('public' or 'production').
+    Precedence: env_override (CLI) > ENVIRONMENT env var > config['environment'] > 'dev'.
+    """
+    env = env_override or os.getenv("ENVIRONMENT") or config.get("environment", "dev")
+    env = str(env).strip().lower()
+    if env in ("prod", "production"):
+        return "prod", "production"
+    return "dev", "public"
 
 
 # =============================================================================
@@ -171,14 +190,24 @@ async def scrape_channel_for_window(client, channel, day_start: datetime, day_en
     return messages_in_window
 
 
-async def run_scraper(dry_run: bool = False, lookback_days: int = 2, force: bool = False):
-    config  = load_config()
+async def run_scraper(dry_run: bool = False, lookback_days: int = 2, force: bool = False, config_file: str = None, env: str = None):
+    config = load_config(config_file)
+    environment, schema = resolve_environment_and_schema(config, env_override=env)
 
-    api_id   = os.getenv("TELEGRAM_API_ID")  or config["telegram"].get("api_id")
-    api_hash = os.getenv("TELEGRAM_API_HASH") or config["telegram"].get("api_hash")
-    channels = config["scraping"].get("channels", [])
-    limit    = config["scraping"].get("limit_per_channel", 200)
-    pg_url   = (
+    api_id   = os.getenv("TELEGRAM_API_ID")  or config.get("telegram", {}).get("api_id")
+    api_hash = os.getenv("TELEGRAM_API_HASH") or config.get("telegram", {}).get("api_hash")
+    
+    # Allow comma-separated env var override for channels
+    env_channels = os.getenv("TELEGRAM_CHANNELS")
+    if env_channels:
+        channels = [ch.strip() for ch in env_channels.split(",") if ch.strip()]
+    else:
+        channels = config.get("scraping", {}).get("channels", [])
+
+    env_limit = os.getenv("TELEGRAM_LIMIT_PER_CHANNEL")
+    limit = int(env_limit) if env_limit else config.get("scraping", {}).get("limit_per_channel", 200)
+
+    pg_url = (
         os.getenv("NEON_DATABASE_URL")
         or config.get("postgresql", {}).get("url", "")
     )
@@ -188,13 +217,14 @@ async def run_scraper(dry_run: bool = False, lookback_days: int = 2, force: bool
     print("=" * 65)
     print(f"  🤖 Telegram Scraper — Timestamp-based mode")
     print("=" * 65)
+    print(f"  Environment  : {environment} (schema: {schema})")
     print(f"  Channels     : {channels}")
     print(f"  Lookback days: {lookback_days}  ({day_windows[0][0]} → {day_windows[-1][0]})")
     print(f"  Dry-run      : {dry_run}")
     print(f"  Force        : {force}")
     print("=" * 65)
 
-    storage = StorageHandler(pg_url=pg_url)
+    storage = StorageHandler(pg_url=pg_url, schema=schema)
 
     is_placeholder = (
         not api_id or not api_hash
@@ -210,13 +240,24 @@ async def run_scraper(dry_run: bool = False, lookback_days: int = 2, force: bool
 
     try:
         from telethon import TelegramClient
+        from telethon.sessions import StringSession
 
-        session_name = config["telegram"].get("session_name", "telegram_scraper")
-        session_path = os.path.join(os.path.dirname(__file__), session_name)
+        string_session_val = os.getenv("TELEGRAM_STRING_SESSION") or config.get("telegram", {}).get("string_session")
+        if string_session_val:
+            print("[*] Connecting to Telegram using StringSession...")
+            client = TelegramClient(StringSession(string_session_val), int(api_id), api_hash,
+                                    connection_retries=1, timeout=10)
+        else:
+            session_name = config.get("telegram", {}).get("session_name", "telegram_scraper")
+            session_dir = os.getenv("TELEGRAM_SESSION_DIR", os.path.dirname(__file__))
+            if not os.path.isabs(session_name):
+                session_path = os.path.join(session_dir, session_name)
+            else:
+                session_path = session_name
+            print(f"[*] Connecting to Telegram (session: {session_path})...")
+            client = TelegramClient(session_path, int(api_id), api_hash,
+                                    connection_retries=1, timeout=10)
 
-        print(f"[*] Connecting to Telegram (session: {session_name})...")
-        client = TelegramClient(session_path, int(api_id), api_hash,
-                                connection_retries=1, timeout=10)
         await client.connect()
 
         if not await client.is_user_authorized():
@@ -364,6 +405,14 @@ Examples:
         """
     )
     parser.add_argument(
+        "--config", default=None, metavar="PATH",
+        help="Path to custom config YAML file (or set CONFIG_PATH env var)"
+    )
+    parser.add_argument(
+        "--env", choices=["dev", "prod"], default=None,
+        help="Environment to target ('dev' -> public schema, 'prod' -> production schema). Overrides config.yaml."
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Preview scraping without writing to DB"
     )
@@ -380,5 +429,11 @@ Examples:
     if args.lookback < 1:
         parser.error("--lookback must be at least 1")
 
-    asyncio.run(run_scraper(dry_run=args.dry_run, lookback_days=args.lookback, force=args.force))
+    asyncio.run(run_scraper(
+        dry_run=args.dry_run,
+        lookback_days=args.lookback,
+        force=args.force,
+        config_file=args.config,
+        env=args.env
+    ))
 

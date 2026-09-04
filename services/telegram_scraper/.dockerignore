@@ -1,0 +1,30 @@
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+*.egg-info/
+.DS_Store
+
+# Git & CI/CD
+.git/
+.github/
+
+# Credentials & Configurations
+.env
+.env.*
+!.env.example
+config.yaml
+
+# Session Files & Databases
+*.session
+*.session-journal
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/

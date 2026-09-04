@@ -49,7 +49,7 @@ from typing import Generator
 
 import yaml
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine, func, text
 from sqlalchemy.orm import sessionmaker
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -74,15 +74,33 @@ log = logging.getLogger(__name__)
 
 
 # ===========================================================================
-# Config loader
+# Config loader & Environment Helper
 # ===========================================================================
 
-def load_config(config_file: str = "config.yaml") -> dict:
-    target = os.path.join(BASE_DIR, config_file)
+def load_config(config_file: str = None) -> dict:
+    if not config_file:
+        config_file = os.getenv("CONFIG_PATH", "config.yaml")
+    if os.path.isabs(config_file):
+        target = config_file
+    else:
+        target = os.path.join(BASE_DIR, config_file)
     if not os.path.exists(target):
         target = os.path.join(BASE_DIR, "config.example.yaml")
     with open(target, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def resolve_environment_and_schema(config: dict, env_override: str = None) -> tuple[str, str]:
+    """
+    Resolve environment ('dev' or 'prod') and corresponding PostgreSQL schema
+    ('public' or 'production').
+    Precedence: env_override (CLI) > ENVIRONMENT env var > config['environment'] > 'dev'.
+    """
+    env = env_override or os.getenv("ENVIRONMENT") or config.get("environment", "dev")
+    env = str(env).strip().lower()
+    if env in ("prod", "production"):
+        return "prod", "production"
+    return "dev", "public"
 
 
 # ===========================================================================
@@ -205,9 +223,14 @@ def build_day_windows(
 # Database helpers
 # ===========================================================================
 
-def get_pg_engine(pg_url: str):
-    """Create engine for Neon PostgreSQL (used for both read and write)."""
-    return create_engine(pg_url, pool_pre_ping=True)
+def get_pg_engine(pg_url: str, schema: str = "public"):
+    """Create engine for Neon PostgreSQL (used for both read and write) configured for target schema."""
+    engine = create_engine(pg_url, pool_pre_ping=True)
+    if schema and schema != "public":
+        with engine.connect() as conn:
+            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+            conn.commit()
+    return engine.execution_options(schema_translate_map={None: schema})
 
 
 def get_latest_cleaned_date(session, channel_name: str) -> date | None:
@@ -413,6 +436,7 @@ def clean_and_upload(
     dict_path: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
+    env: str | None = None,
 ) -> None:
     """
     Main pipeline: read TelegramMessage → split → write CleanTeleText.
@@ -427,13 +451,26 @@ def clean_and_upload(
                     Defaults to the day after the latest completed watermark per channel.
         to_date:    YYYY-MM-DD end of the day range to clean (inclusive).
                     Defaults to today (UTC).
+        env:        Optional environment override ('dev' -> public, 'prod' -> production).
     """
+    environment, schema = resolve_environment_and_schema(config, env_override=env)
+
     # ------------------------------------------------------------------
     # Bigram dictionary
     # ------------------------------------------------------------------
-    effective_dict = dict_path or config.get("cleaner", {}).get("dict_path")
+    effective_dict = dict_path or os.getenv("CLEANER_DICT_PATH") or config.get("cleaner", {}).get("dict_path")
     if effective_dict:
+        # Resolve path if relative
+        if not os.path.isabs(effective_dict) and not os.path.exists(effective_dict):
+            candidate_root = os.path.join(PROJECT_ROOT, effective_dict)
+            candidate_base = os.path.join(BASE_DIR, effective_dict)
+            if os.path.exists(candidate_root):
+                effective_dict = candidate_root
+            elif os.path.exists(candidate_base):
+                effective_dict = candidate_base
+
         log.info("Loading custom bigram dict: %s", effective_dict)
+        print(f"[*] Loading bigram dictionary from: {effective_dict}")
         bigrams: list[str] | None = _load_dict_file(effective_dict)
         log.info("  → %d bigrams loaded.", len(bigrams))
     else:
@@ -455,9 +492,9 @@ def clean_and_upload(
 
     # Ensure annotation tables exist (incl. cleaning_logs)
     if not dry_run:
-        init_annotation_db(pg_url)
+        init_annotation_db(pg_url, schema=schema)
 
-    engine = get_pg_engine(pg_url)
+    engine = get_pg_engine(pg_url, schema=schema)
     Session = sessionmaker(bind=engine)
     session = Session()
 
@@ -487,6 +524,7 @@ def clean_and_upload(
         print("=" * 65)
         print("  🧹 Myanmar Sentence Cleaner (Per-Channel Watermark)")
         print("=" * 65)
+        print(f"  Environment : {environment} (schema: {schema})")
         print(f"  Channels    : {channels}")
         print(f"  To Date     : {resolved_to}")
         print(f"  Dry-run     : {dry_run}")
@@ -641,6 +679,8 @@ Examples:
     )
     parser.add_argument("--config", default="config.yaml",
                         help="Config file name (default: config.yaml).")
+    parser.add_argument("--env", choices=["dev", "prod"], default=None,
+                        help="Environment to target ('dev' -> public schema, 'prod' -> production schema). Overrides config.yaml.")
     parser.add_argument("--channel", "-c", default=None, metavar="NAME",
                         help="Specific channel name to clean (default: all channels in config/DB).")
     parser.add_argument("--dry-run", action="store_true",
@@ -693,5 +733,6 @@ if __name__ == "__main__":
         dict_path=args.dict,
         from_date=resolved_from_date,
         to_date=args.to_date,
+        env=args.env,
     )
 
