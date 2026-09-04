@@ -1,6 +1,6 @@
 # Full-Stack NLP Annotation Platform
 
-This service provides a Web UI for reviewing scraped Telegram messages, performing NLP token/entity annotation, and exporting labeled datasets.
+This service provides a Web UI for reviewing scraped Telegram messages, performing NLP token/entity annotation, and exporting labeled datasets. This annotation code is initated and inspired from Dr.Ye Kyaw Thu's Arluu Annotation Project.
 
 ---
 

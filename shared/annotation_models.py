@@ -52,7 +52,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger, Column, DateTime, ForeignKey, Integer, String, Text,
-    UniqueConstraint, create_engine,
+    UniqueConstraint, create_engine, text,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -226,13 +226,18 @@ class SkippedRecord(AnnotationBase):
 # DB initialisation helper
 # ---------------------------------------------------------------------------
 
-def init_annotation_db(pg_url: str):
+def init_annotation_db(pg_url: str, schema: str = "public"):
     """
     Connect to Neon PostgreSQL and create annotation-owned tables only
     (users, clean_tele_text, cleaning_logs, annotation_results,
-    skipped_records).
-    Returns the engine.
+    skipped_records) in the target schema.
+    Returns the schema-configured engine.
     """
     engine = create_engine(pg_url, pool_pre_ping=True)
-    AnnotationBase.metadata.create_all(engine)
-    return engine
+    if schema and schema != "public":
+        with engine.connect() as conn:
+            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+            conn.commit()
+    schema_engine = engine.execution_options(schema_translate_map={None: schema})
+    AnnotationBase.metadata.create_all(schema_engine)
+    return schema_engine

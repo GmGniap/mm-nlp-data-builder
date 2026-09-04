@@ -9,7 +9,7 @@ from shared.scraper_models import TelegramMessage, ScrapingLog, init_scraper_db
 
 
 class StorageHandler:
-    def __init__(self, pg_url: str):
+    def __init__(self, pg_url: str, schema: str = "public"):
         """
         Initialise connection to Neon PostgreSQL using the scraper-owned models.
 
@@ -19,8 +19,12 @@ class StorageHandler:
             Neon PostgreSQL connection string, e.g.
             "postgresql://user:pw@host/db?sslmode=require".
             Read from config key ``postgresql.url`` or env var NEON_DATABASE_URL.
+        schema : str, optional
+            PostgreSQL schema to use ('public' for dev, 'production' for prod).
+            Default is 'public'.
         """
-        self.engine = init_scraper_db(pg_url)
+        self.schema = schema
+        self.engine = init_scraper_db(pg_url, schema=schema)
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
 

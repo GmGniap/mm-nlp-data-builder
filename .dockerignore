@@ -1,0 +1,31 @@
+# Git & CI/CD
+.git/
+.github/
+
+# Virtual Environments & Caching
+.venv/
+env/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.DS_Store
+
+# Sensitive Environment Configurations & Credentials
+.env
+.env.*
+!.env.example
+config.yaml
+**/config.yaml
+
+# Session Files & SQLite Databases
+*.session
+*.session-journal
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
