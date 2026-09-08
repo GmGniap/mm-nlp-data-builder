@@ -6,6 +6,7 @@ import io
 import yaml
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlencode
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, '../../')))
@@ -20,11 +21,18 @@ from dotenv import load_dotenv
 from services.nlp_annotation_app.models import (
     db, User, CleanTeleText, CleaningLog, AnnotationResult, SkippedRecord
 )
+from shared.recording_auth import create_recording_token
 
 load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-nlp-annotation-secret-key-12345')
+app.config['RECORDING_SERVICE_URL'] = os.getenv(
+    'RECORDING_SERVICE_URL', 'http://127.0.0.1:5001/'
+)
+app.config['RECORDING_TOKEN_SECRET'] = os.getenv(
+    'RECORDING_TOKEN_SECRET', app.config['SECRET_KEY']
+)
 
 # Use Neon PostgreSQL — same connection string as scraper/cleaner services.
 # Set NEON_DATABASE_URL in your .env file.
@@ -308,6 +316,17 @@ def export_dataset():
 @login_required
 def annotate():
     return render_template('annotate.html')
+
+
+@app.route('/record')
+@login_required
+def record_audio():
+    token = create_recording_token(
+        app.config['RECORDING_TOKEN_SECRET'], current_user.id, current_user.email
+    )
+    base_url = app.config['RECORDING_SERVICE_URL']
+    separator = '&' if '?' in base_url else '?'
+    return redirect(f"{base_url}{separator}{urlencode({'token': token})}")
 
 # --- API Endpoints ---
 

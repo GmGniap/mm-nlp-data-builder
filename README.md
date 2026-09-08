@@ -30,12 +30,20 @@ This repository is aimed to build essential tools for Myanmar Natural Language P
 │   │   ├── README.md              # Agent 2 developer guide
 │   │   └── requirements.txt       # Telegram scraping dependencies
 │   │
-│   └── nlp_annotation_app/        # Full-Stack Developer Agent (NLP Annotation UI)
+│   ├── nlp_annotation_app/        # Full-Stack Developer Agent (NLP Annotation UI)
 │       ├── app.py                 # Flask web application entrypoint (Arloo integrated)
 │       ├── models.py              # Application models (Users, Annotations, Scraped Data)
 │       ├── templates/             # UI Templates (login, register, dashboard, annotate)
 │       ├── README.md              # Agent 3 developer guide
 │       └── requirements.txt       # Web UI & NLP dependencies
+│   │
+│   └── recording_app/             # Browser speech-recording microservice
+│       ├── app.py                 # Signed API, prompt loading, and cleanup CLI
+│       ├── storage.py             # Bounded chunks and atomic WAV finalization
+│       ├── templates/             # Accessible recorder interface
+│       ├── static/                # AudioWorklet, recorder state machine, styles
+│       ├── tests/                 # API, ownership, lifecycle, and storage tests
+│       └── README.md              # Recorder deployment and API guide
 │
 └── .github/
     └── workflows/
@@ -67,3 +75,14 @@ uv run python services/telegram_scraper/scraper.py --dry-run
 uv run python services/nlp_annotation_app/app.py
 ```
 App will start on `http://127.0.0.1:5000`.
+
+### 5. Run Speech Recording Service
+
+Set the same `RECORDING_TOKEN_SECRET` for both services, then run:
+
+```bash
+uv run --with-requirements services/recording_app/requirements.txt \
+  flask --app services.recording_app.app run --port 5001
+```
+
+Open the recorder through the authenticated **Record Audio** navigation item in the annotation app. See `services/recording_app/README.md` for storage, cleanup, API, and deployment details.
