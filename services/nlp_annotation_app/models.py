@@ -1,134 +1,44 @@
 """
 services/nlp_annotation_app/models.py
 ======================================
-Flask-SQLAlchemy models for the NLP Annotation Platform.
+Flask-SQLAlchemy models for the NLP Annotation Platform feature.
 
-Architecture
-------------
-Plain SQLAlchemy (used by cleaner.py) and Flask-SQLAlchemy (used here)
-cannot share a declarative base — they use different metaclass systems.
-Direct inheritance is therefore not possible.
-
-Instead, this module acts as a *thin extension layer* over the canonical
-column definitions in shared/annotation_models.py:
-
-  * Column definitions are imported from shared.annotation_models and
-    re-declared on Flask-SQLAlchemy models so there is exactly ONE place
-    to change a column — shared/annotation_models.py.  This file only
-    adds Flask / app-layer concerns (UserMixin, password helpers,
-    db.relationship wiring).
-
-  * CleaningLog is exposed read-only by the Flask app (annotators can
-    see cleaning status but never write to it), so it is also mapped here
-    from the shared column definitions.
-
-Sync rule
----------
-  If you add/remove a column in shared/annotation_models.py you must
-  mirror that change here in the corresponding model class.  The
-  columns are grouped and labelled so the diff is obvious.
-
-Tables owned / managed:
-  - users              annotator accounts
-  - clean_tele_text    cleaned sentence lines (produced by cleaner.py)
-  - cleaning_logs      cleaner watermark / audit trail  (read-only here)
-  - annotation_results submitted annotation JSON blobs
-  - skipped_records    skip markers per sentence/user/type
+Imports central database instance and User model from services.extensions / services.models,
+and maps feature-specific tables:
+  - clean_tele_text
+  - cleaning_logs
+  - annotation_results
+  - skipped_records
 """
+
+from __future__ import annotations
 
 import os
 import sys
 
-from datetime import datetime
-from flask_login import UserMixin
-from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import check_password_hash, generate_password_hash
-
-# ---------------------------------------------------------------------------
-# Import canonical column definitions from shared/annotation_models.py
-# ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.abspath(os.path.join(_HERE, "../../"))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from shared.annotation_models import (
-    User             as _SharedUser,
     CleanTeleText    as _SharedCleanTeleText,
     CleaningLog      as _SharedCleaningLog,
     AnnotationResult as _SharedAnnotationResult,
     SkippedRecord    as _SharedSkippedRecord,
 )
+from services.extensions import db
+from services.models import User, _col
 
-# ---------------------------------------------------------------------------
-# Flask-SQLAlchemy db instance
-# ---------------------------------------------------------------------------
-db = SQLAlchemy()
-
-
-# ---------------------------------------------------------------------------
-# Helper: extract column kwargs from a shared SQLAlchemy Column so we can
-# re-declare it on a Flask-SQLAlchemy model without duplicating the spec.
-# ---------------------------------------------------------------------------
-def _col(shared_model, attr_name):
-    """
-    Return a new db.Column that mirrors the column declared on *shared_model*
-    for the given *attr_name*.
-
-    We copy the column type and key constraints (primary_key, nullable,
-    unique, index, default, autoincrement) so the Flask-SQLAlchemy model
-    stays in sync with the canonical definition automatically.
-    """
-    col = shared_model.__table__.c[attr_name]
-    kwargs = dict(
-        primary_key=col.primary_key,
-        nullable=col.nullable,
-        unique=col.unique,
-        index=col.index,
-        default=col.default.arg if col.default is not None else None,
-        autoincrement=col.autoincrement if col.autoincrement != "auto" else True,
-    )
-    # Drop None-valued keys so Flask-SQLAlchemy uses its own defaults
-    kwargs = {k: v for k, v in kwargs.items() if v is not None}
-    return db.Column(col.type, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
-
-class User(UserMixin, db.Model):
-    """
-    Annotator account.
-    Column spec mirrors shared.annotation_models.User.
-    Flask extras: UserMixin, set_password(), check_password().
-    """
-    __tablename__ = "users"
-
-    # --- Columns (mirrored from shared/annotation_models.py → User) ---
-    id            = _col(_SharedUser, "id")
-    email         = _col(_SharedUser, "email")
-    password_hash = _col(_SharedUser, "password_hash")
-    role          = _col(_SharedUser, "role")
-    created_at    = _col(_SharedUser, "created_at")
-
-    # --- Flask-app-only relationships ---
-    annotation_results = db.relationship(
-        "AnnotationResult", back_populates="user", cascade="all, delete-orphan"
-    )
-    skipped_records = db.relationship(
-        "SkippedRecord", back_populates="user", cascade="all, delete-orphan"
-    )
-
-    # --- Flask-app-only methods ---
-    def set_password(self, password: str) -> None:
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password: str) -> bool:
-        return check_password_hash(self.password_hash, password)
-
-    def __repr__(self) -> str:
-        return f"<User {self.email}>"
+# Re-export db and User for backward compatibility
+__all__ = [
+    "db",
+    "User",
+    "CleanTeleText",
+    "CleaningLog",
+    "AnnotationResult",
+    "SkippedRecord",
+]
 
 
 class CleanTeleText(db.Model):
@@ -138,7 +48,6 @@ class CleanTeleText(db.Model):
     """
     __tablename__ = "clean_tele_text"
 
-    # --- Columns (mirrored from shared/annotation_models.py → CleanTeleText) ---
     id                  = _col(_SharedCleanTeleText, "id")
     telegram_message_id = _col(_SharedCleanTeleText, "telegram_message_id")
     line_index          = _col(_SharedCleanTeleText, "line_index")
@@ -147,7 +56,6 @@ class CleanTeleText(db.Model):
     source_message_id   = _col(_SharedCleanTeleText, "source_message_id")
     created_at          = _col(_SharedCleanTeleText, "created_at")
 
-    # --- Flask-app-only relationships ---
     annotation_results = db.relationship(
         "AnnotationResult", back_populates="clean_line", cascade="all, delete-orphan"
     )
@@ -166,7 +74,6 @@ class CleaningLog(db.Model):
     """
     __tablename__ = "cleaning_logs"
 
-    # --- Columns (mirrored from shared/annotation_models.py → CleaningLog) ---
     id                  = _col(_SharedCleaningLog, "id")
     channel_name        = _col(_SharedCleaningLog, "channel_name")
     run_date            = _col(_SharedCleaningLog, "run_date")
@@ -192,7 +99,6 @@ class AnnotationResult(db.Model):
     """
     __tablename__ = "annotation_results"
 
-    # --- Columns ---
     id              = _col(_SharedAnnotationResult, "id")
     clean_line_id   = db.Column(
         db.Integer, db.ForeignKey("clean_tele_text.id"), nullable=False, index=True
@@ -205,7 +111,6 @@ class AnnotationResult(db.Model):
     created_at      = _col(_SharedAnnotationResult, "created_at")
     updated_at      = _col(_SharedAnnotationResult, "updated_at")
 
-    # --- Flask-app-only relationships ---
     clean_line = db.relationship("CleanTeleText", back_populates="annotation_results")
     user       = db.relationship("User", back_populates="annotation_results")
 
@@ -220,7 +125,6 @@ class SkippedRecord(db.Model):
     """
     __tablename__ = "skipped_records"
 
-    # --- Columns ---
     id              = _col(_SharedSkippedRecord, "id")
     clean_line_id   = db.Column(
         db.Integer, db.ForeignKey("clean_tele_text.id"), nullable=False, index=True
@@ -231,7 +135,6 @@ class SkippedRecord(db.Model):
     annotation_type = _col(_SharedSkippedRecord, "annotation_type")
     created_at      = _col(_SharedSkippedRecord, "created_at")
 
-    # --- Flask-app-only relationships ---
     clean_line = db.relationship("CleanTeleText", back_populates="skipped_records")
     user       = db.relationship("User", back_populates="skipped_records")
 

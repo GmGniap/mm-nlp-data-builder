@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — NLP Annotation Platform{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+    <!-- Header Section -->
+    <div class="flex items-center justify-between bg-slate-800 p-6 rounded-xl border border-slate-700">
+        <div>
+            <h1 class="text-2xl font-bold text-slate-100">Telegram Scraping & Annotation Overview</h1>
+            <p class="text-sm text-slate-400 mt-1">Track scraped messages and active NLP tagging progress.</p>
+        </div>
+        <a href="{{ url_for('annotation.annotate') }}" class="bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2.5 rounded-lg font-medium shadow transition flex items-center space-x-2">
+            <i class="fa-solid fa-play"></i> <span>Start Annotating</span>
+        </a>
+    </div>
+
+    <!-- Statistics Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-md">
+            <div class="flex justify-between items-center text-slate-400 mb-2">
+                <span class="text-xs uppercase font-semibold">Total Scraped</span>
+                <i class="fa-solid fa-paper-plane text-indigo-400"></i>
+            </div>
+            <div class="text-3xl font-extrabold text-slate-100">{{ total_messages }}</div>
+            <div class="text-xs text-slate-500 mt-1">From Telegram channels</div>
+        </div>
+
+        <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-md">
+            <div class="flex justify-between items-center text-amber-400 mb-2">
+                <span class="text-xs uppercase font-semibold">Pending Queue</span>
+                <i class="fa-solid fa-clock"></i>
+            </div>
+            <div class="text-3xl font-extrabold text-amber-300">{{ pending_sentences }}</div>
+            <div class="text-xs text-slate-500 mt-1">Awaiting review</div>
+        </div>
+
+        <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-md">
+            <div class="flex justify-between items-center text-emerald-400 mb-2">
+                <span class="text-xs uppercase font-semibold">Annotated</span>
+                <i class="fa-solid fa-circle-check"></i>
+            </div>
+            <div class="text-3xl font-extrabold text-emerald-300">{{ annotated_sentences }}</div>
+            <div class="text-xs text-slate-500 mt-1">Completed items</div>
+        </div>
+
+        <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-md">
+            <div class="flex justify-between items-center text-purple-400 mb-2">
+                <span class="text-xs uppercase font-semibold">Total Tags</span>
+                <i class="fa-solid fa-tags"></i>
+            </div>
+            <div class="text-3xl font-extrabold text-purple-300">{{ total_tags }}</div>
+            <div class="text-xs text-slate-500 mt-1">Entities & Labels</div>
+        </div>
+    </div>
+
+    <!-- Recent Scraped Messages Table -->
+    <div class="bg-slate-800 border border-slate-700 rounded-xl p-6 shadow-md">
+        <h3 class="text-lg font-bold text-slate-100 mb-4 flex items-center space-x-2">
+            <i class="fa-solid fa-list-check text-indigo-400"></i> <span>Recent Scraped Messages</span>
+        </h3>
+
+        {% if recent_lines %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm text-slate-300">
+                <thead class="bg-slate-900/60 text-xs uppercase text-slate-400 border-b border-slate-700">
+                    <tr>
+                        <th class="py-3 px-4">Channel Target</th>
+                        <th class="py-3 px-4">Sentence Preview</th>
+                        <th class="py-3 px-4 text-right">Action</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-700/50">
+                    {% for line in recent_lines %}
+                    {% set display_name, source_url = format_channel_info(line.channel_name, line.source_message_id) %}
+                    <tr class="hover:bg-slate-700/40 transition">
+                        <td class="py-3.5 px-4 font-semibold text-indigo-300">
+                            <a href="{{ source_url }}" target="_blank" class="hover:underline">{{ display_name }}</a>
+                        </td>
+                        <td class="py-3.5 px-4 truncate max-w-md">{{ line.sentence }}</td>
+                        <td class="py-3.5 px-4 text-right">
+                            <a href="{{ url_for('annotation.annotate') }}" class="text-indigo-400 hover:text-indigo-300 font-medium hover:underline text-xs">
+                                Annotate &rarr;
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="bg-slate-900/40 border border-slate-700/60 rounded-lg p-8 text-center text-slate-400">
+            <i class="fa-solid fa-box-open text-3xl mb-3 text-slate-600"></i>
+            <p>No cleaned sentences available in database yet.</p>
+            <p class="text-xs text-slate-500 mt-1">Run cleaner script to process messages into sentences.</p>
+        </div>
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

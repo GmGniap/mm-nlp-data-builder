@@ -168,6 +168,7 @@
 </div>
 
 <script>
+    const ANNOTATION_API_BASE = "{{ url_for('annotation.annotate') }}".replace(/\/$/, '') + '/api';
     let FIELDS = [], IDX = -1, TOTAL = 0;
     let saveTimer = null, dirty = false;
     let LANG = 'mya';  // active language — updated by dropdown
@@ -175,7 +176,7 @@
     let CURRENT_RECORD = null;
 
     async function init() {
-        const r = await fetch('/api/config');
+        const r = await fetch(`${ANNOTATION_API_BASE}/config`);
         const c = await r.json();
         FIELDS = c.fields;
         LANG = c.default_language || 'mya';
@@ -218,7 +219,7 @@
     }
 
     async function loadState(indexParam = null) {
-        let url = '/api/state';
+        let url = `${ANNOTATION_API_BASE}/state`;
         const idx = indexParam !== null ? indexParam : IDX;
         url += `?index=${idx}&lang=${encodeURIComponent(LANG)}&ann_type=${encodeURIComponent(ANN_TYPE)}`;
 
@@ -422,7 +423,7 @@
             }
         }
 
-        const r = await fetch('/api/submit', {
+        const r = await fetch(`${ANNOTATION_API_BASE}/submit`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -442,7 +443,7 @@
     async function skipRecord() {
         if (!CURRENT_RECORD) return;
 
-        const r = await fetch('/api/skip', {
+        const r = await fetch(`${ANNOTATION_API_BASE}/skip`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -476,14 +477,14 @@
     }
 
     async function addNew() {
-        await fetch('/api/add', { method: 'POST' });
+        await fetch(`${ANNOTATION_API_BASE}/add`, { method: 'POST' });
         await loadState(TOTAL);
         document.querySelector('[data-f="text"]')?.focus();
     }
 
     async function delRec() {
         if (!confirm('Delete current record? This action cannot be undone.')) return;
-        await fetch('/api/delete', {
+        await fetch(`${ANNOTATION_API_BASE}/delete`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ index: IDX })
@@ -494,7 +495,7 @@
     function saveAs() {
         const fmt = prompt('Choose format (csv / tsv / json):', 'csv');
         if (!fmt) return;
-        window.open(`/api/save?format=${encodeURIComponent(fmt)}`, '_blank');
+        window.open(`${ANNOTATION_API_BASE}/save?format=${encodeURIComponent(fmt)}`, '_blank');
     }
 
     // Keyboard navigation
