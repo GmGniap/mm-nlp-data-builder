@@ -20,6 +20,7 @@ Browser-based prompted speech capture for the MM NLP Data Builder. The browser c
 | `RECORDING_MAX_DURATION_SECONDS` | `120` | Hard server-side PCM duration limit. |
 | `RECORDING_MAX_CHUNK_BYTES` | `1048576` | Maximum request chunk size. |
 | `RECORDING_SESSION_TTL_SECONDS` | `3600` | Lifetime of incomplete sessions. |
+| `MAIN_APP_URL` | `http://127.0.0.1:5000/dashboard` | Homepage / dashboard URL returned by "back to main" button. |
 
 The annotation service also accepts `RECORDING_SERVICE_URL`, which points to the public recorder URL. In production, route both services through HTTPS because browser microphone access requires a secure context.
 

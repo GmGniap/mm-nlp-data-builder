@@ -1,4 +1,5 @@
 const elements = {
+    backToMainButton: document.querySelector('#backToMainButton'),
     serviceBadge: document.querySelector('#serviceBadge'),
     promptText: document.querySelector('#promptText'),
     promptMode: document.querySelector('#promptMode'),
@@ -493,6 +494,16 @@ async function initialize() {
         elements.limit.textContent = `/ ${formatTime(state.maxDurationSeconds)}`;
         elements.serviceBadge.textContent = 'Service ready';
         elements.serviceBadge.classList.add('ready');
+        if (elements.backToMainButton && document.referrer) {
+            try {
+                const refUrl = new URL(document.referrer);
+                if (refUrl.pathname.includes('dashboard') || refUrl.port === '5000') {
+                    elements.backToMainButton.href = document.referrer;
+                }
+            } catch {
+                // Keep default href
+            }
+        }
         if (elements.jumpPromptInput && state.prompts.length) {
             elements.jumpPromptInput.max = state.prompts.length;
         }

@@ -118,6 +118,43 @@ def test_standalone_page_has_jump_to_number_elements(client):
     assert body.find('id="promptMode"') < body.find('id="jumpPromptInput"') < body.find('id="nextPromptButton"')
 
 
+def test_standalone_page_has_back_to_main_button(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b'id="backToMainButton"' in response.data
+    assert b"Back to main" in response.data
+    body = response.data.decode("utf-8")
+    assert 'href="http://127.0.0.1:5000/dashboard"' in body
+    # Verify back button and serviceBadge are co-located in hero-actions
+    assert '<div class="hero-actions">' in body
+    assert body.find('id="backToMainButton"') < body.find('id="serviceBadge"')
+
+
+def test_dashboard_redirect_route(client):
+    response = client.get("/dashboard")
+    assert response.status_code == 302
+    assert response.headers["Location"] == "http://127.0.0.1:5000/dashboard"
+
+
+def test_custom_main_app_url(tmp_path):
+    custom_url = "http://custom-host:8080/my-dashboard"
+    app = create_app(
+        {
+            "RECORDING_STORAGE_ROOT": str(tmp_path / "data"),
+            "RECORDING_PROMPTS_FILE": str(tmp_path / "prompts.txt"),
+            "MAIN_APP_URL": custom_url,
+        }
+    )
+    with app.test_client() as custom_client:
+        response = custom_client.get("/")
+        assert response.status_code == 200
+        assert f'href="{custom_url}"'.encode("utf-8") in response.data
+
+        redirect_resp = custom_client.get("/dashboard")
+        assert redirect_resp.status_code == 302
+        assert redirect_resp.headers["Location"] == custom_url
+
+
 def test_api_retry_and_overwrite_round_trip(client):
     session1 = create_session(client)
     audio1 = b"\x10\x00" * 3_200

@@ -55,6 +55,13 @@ h1 { font-size: clamp(2.4rem, 7vw, 4.8rem); line-height: 0.94; }
 h2 { font-size: 1.35rem; }
 .lede { max-width: 650px; color: var(--muted); line-height: 1.6; }
 
+.hero-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
 .badge {
     flex: none;
     padding: 9px 14px;
@@ -67,6 +74,23 @@ h2 { font-size: 1.35rem; }
 }
 
 .badge.ready { color: var(--green); }
+
+.header-back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    white-space: nowrap;
+    text-decoration: none;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.header-back-btn:hover {
+    color: var(--green);
+    border-color: rgba(57, 217, 138, 0.4);
+    background: rgba(57, 217, 138, 0.08);
+}
 
 .panel {
     margin-top: 16px;
@@ -217,6 +241,7 @@ textarea:focus, select:focus, button:focus-visible, .jump-prompt-input:focus {
 .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 
 .button {
+    text-decoration: none;
     padding: 10px 16px;
     border: 1px solid var(--line);
     border-radius: 11px;
@@ -248,7 +273,7 @@ textarea:focus, select:focus, button:focus-visible, .jump-prompt-input:focus {
 @media (max-width: 700px) {
     .shell { width: min(100% - 20px, 980px); padding-top: 24px; }
     .hero, .panel-heading, .record-core { align-items: stretch; flex-direction: column; }
-    .badge { align-self: flex-start; }
+    .hero-actions { align-self: flex-start; }
     .prompt-actions { align-items: stretch; flex-wrap: wrap; }
     .record-button { width: 100%; }
     .timer-block { justify-content: center; }

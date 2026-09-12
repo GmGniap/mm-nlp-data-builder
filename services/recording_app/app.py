@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import click
-from flask import Flask, Response, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file
 from dotenv import load_dotenv
 
 
@@ -44,6 +44,9 @@ def create_app(test_config: dict | None = None) -> Flask:
         RECORDING_SESSION_TTL_SECONDS=int(
             os.getenv("RECORDING_SESSION_TTL_SECONDS", "3600")
         ),
+        MAIN_APP_URL=os.getenv(
+            "MAIN_APP_URL", "http://127.0.0.1:5000/dashboard"
+        ),
     )
     if test_config:
         app.config.update(test_config)
@@ -74,7 +77,14 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.get("/")
     def recorder_page():
-        return render_template("recorder.html")
+        return render_template(
+            "recorder.html",
+            main_app_url=app.config["MAIN_APP_URL"],
+        )
+
+    @app.get("/dashboard")
+    def dashboard_redirect():
+        return redirect(app.config["MAIN_APP_URL"])
 
     @app.get("/healthz")
     def healthcheck():

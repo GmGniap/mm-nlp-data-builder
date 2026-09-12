@@ -15,7 +15,15 @@
                 <h1>Speech Recorder</h1>
                 <p class="lede">Read the prompt naturally. Audio streams to bounded disk storage and is finalized as mono PCM WAV.</p>
             </div>
-            <div id="serviceBadge" class="badge">Connecting</div>
+            <div class="hero-actions">
+                <a id="backToMainButton" href="{{ main_app_url }}" class="button ghost header-back-btn">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/>
+                    </svg>
+                    Back to main
+                </a>
+                <div id="serviceBadge" class="badge">Connecting</div>
+            </div>
         </header>
 
         <section class="panel prompt-panel" aria-labelledby="promptHeading">
