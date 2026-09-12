@@ -17,7 +17,7 @@ Qwen is not required for reliable capture. Transcription and prompt-match qualit
 ## Agreed Scope
 
 1. Add `services/recording_app` as a standalone Flask microservice.
-2. Hand off authenticated users with a short-lived signed token.
+2. Keep local recorder access independent from annotation authentication.
 3. Stream mono 16-bit PCM chunks from an `AudioWorklet` to disk.
 4. Enforce sequence, checksum, size, duration, ownership, and TTL rules.
 5. Atomically finalize WAV plus JSON and TSV metadata.

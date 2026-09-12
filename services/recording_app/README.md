@@ -4,8 +4,8 @@ Browser-based prompted speech capture for the MM NLP Data Builder. The browser c
 
 ## Architecture
 
-- The annotation app issues a short-lived signed token from `/record`.
-- The recorder UI removes the token from the URL and sends it as a Bearer token.
+- The service runs independently and does not require annotation-app authentication.
+- The annotation app's `/record` route simply redirects to the configured recorder URL.
 - PCM chunks are limited, checksummed, sequenced, and stored under an expiring session directory.
 - Final WAV files use UUID names and are committed with an atomic rename.
 - Raw audio is never stored in Flask sessions, Redis, PostgreSQL, or process globals.
@@ -15,8 +15,6 @@ Browser-based prompted speech capture for the MM NLP Data Builder. The browser c
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `RECORDING_TOKEN_SECRET` | development-only value | Shared signing secret; set the same value in both Flask services. |
-| `RECORDING_TOKEN_MAX_AGE` | `3600` | Signed access-token lifetime in seconds. |
 | `RECORDING_STORAGE_ROOT` | `services/recording_app/data` | Persistent storage or mounted volume. |
 | `RECORDING_PROMPTS_FILE` | bundled `prompts.txt` | UTF-8 prompt file, one prompt per line. |
 | `RECORDING_MAX_DURATION_SECONDS` | `120` | Hard server-side PCM duration limit. |
@@ -32,7 +30,7 @@ uv run --with-requirements services/recording_app/requirements.txt \
   flask --app services.recording_app.app run --port 5001
 ```
 
-Set identical `RECORDING_TOKEN_SECRET` values for the annotation and recording services before using the navigation link.
+The recording service loads the project-root `.env` file even when it is started directly with `python services/recording_app/app.py`.
 
 ## Cleanup
 
@@ -56,7 +54,9 @@ uv run --with-requirements services/recording_app/requirements.txt \
 - `GET /api/v1/recordings/{recording_id}/audio`
 - `DELETE /api/v1/recordings/{recording_id}`
 
-All API routes require `Authorization: Bearer <signed-token>`. Audio responses and API metadata use `Cache-Control: private, no-store`.
+Audio responses and API metadata use `Cache-Control: private, no-store`.
+
+This simplified service has no user authentication. Bind it to localhost for local use. Add gateway authentication before exposing it to a public network.
 
 ## Tests
 

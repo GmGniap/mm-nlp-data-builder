@@ -1,0 +1,19 @@
+{
+  "session_id": "c123f845-cff4-459f-b1e0-8bc8a2b9f6b4",
+  "user_id": "local",
+  "prompt": "အော်ဒါနံပါတ် ၁၂၃၄၅ ပါ",
+  "sample_rate": 16000,
+  "bit_depth": 16,
+  "channels": 1,
+  "status": "ready",
+  "next_sequence": 8,
+  "bytes_received": 262144,
+  "created_at": "2026-09-12T05:34:21.499920+00:00",
+  "updated_at": "2026-09-12T05:34:30.761153+00:00",
+  "expires_at": "2026-09-12T06:34:21.499920+00:00",
+  "recording_id": "b4ad2b2f-6ecf-4a33-9baa-0a3ffc29a93e",
+  "duration_seconds": 8.192,
+  "sha256": "588385179e136f4522bf509dde422d88a22062fea91096142900f18aee5d0d53",
+  "storage_path": "recordings/2026-09-12/b4ad2b2f-6ecf-4a33-9baa-0a3ffc29a93e.wav",
+  "completed_at": "2026-09-12T05:34:30.761126+00:00"
+}

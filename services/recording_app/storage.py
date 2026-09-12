@@ -85,6 +85,7 @@ class RecordingStore:
         sample_rate: int,
         bit_depth: int = 16,
         channels: int = 1,
+        overwrite_recording_id: str | None = None,
     ) -> dict:
         prompt = prompt.strip()
         if not prompt:
@@ -95,6 +96,9 @@ class RecordingStore:
             raise RecordingInvalid("Unsupported sample rate.")
         if bit_depth != 16 or channels != 1:
             raise RecordingInvalid("Only mono 16-bit PCM is supported.")
+
+        if overwrite_recording_id:
+            self.get_recording(overwrite_recording_id, user_id=user_id)
 
         session_id = str(uuid.uuid4())
         session_dir = self.sessions_root / session_id
@@ -113,6 +117,7 @@ class RecordingStore:
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
             "expires_at": (now + timedelta(seconds=self.session_ttl_seconds)).isoformat(),
+            "overwrite_recording_id": overwrite_recording_id,
         }
         self._write_json_atomic(session_dir / "metadata.json", meta)
         return meta
@@ -184,7 +189,13 @@ class RecordingStore:
                 "sha256": actual_sha256,
             }
 
-    def finalize(self, session_id: str, *, user_id: str) -> dict:
+    def finalize(
+        self,
+        session_id: str,
+        *,
+        user_id: str,
+        overwrite_recording_id: str | None = None,
+    ) -> dict:
         session_dir = self._session_dir(session_id)
         with self._locked(session_dir / ".lock"):
             meta = self._load_owned_session(session_dir, user_id)
@@ -199,10 +210,17 @@ class RecordingStore:
             if len(chunk_paths) != meta["next_sequence"]:
                 raise RecordingConflict("One or more audio chunks are missing.")
 
-            recording_id = str(uuid.uuid4())
-            day_dir = self.recordings_root / utc_now().strftime("%Y-%m-%d")
-            day_dir.mkdir(parents=True, exist_ok=True)
-            final_path = day_dir / f"{recording_id}.wav"
+            target_overwrite_id = overwrite_recording_id or meta.get("overwrite_recording_id")
+            if target_overwrite_id:
+                _, existing_audio_path = self.get_recording(target_overwrite_id, user_id=user_id)
+                recording_id = target_overwrite_id
+                final_path = existing_audio_path
+            else:
+                recording_id = str(uuid.uuid4())
+                day_dir = self.recordings_root / utc_now().strftime("%Y-%m-%d")
+                day_dir.mkdir(parents=True, exist_ok=True)
+                final_path = day_dir / f"{recording_id}.wav"
+
             part_path = final_path.with_suffix(".wav.part")
 
             try:
@@ -239,7 +257,10 @@ class RecordingStore:
             )
             self._write_json_atomic(final_path.with_suffix(".json"), meta)
             self._write_json_atomic(session_dir / "metadata.json", meta)
-            self._append_manifest(meta)
+            if target_overwrite_id:
+                self._update_manifest(meta)
+            else:
+                self._append_manifest(meta)
             shutil.rmtree(session_dir / "chunks", ignore_errors=True)
             return meta
 
@@ -376,6 +397,55 @@ class RecordingStore:
                 writer.writerow({field: meta.get(field, "") for field in fields})
                 file.flush()
                 os.fsync(file.fileno())
+
+    def _update_manifest(self, meta: dict) -> None:
+        fields = [
+            "recording_id",
+            "prompt",
+            "completed_at",
+            "duration_seconds",
+            "sample_rate",
+            "bit_depth",
+            "sha256",
+            "storage_path",
+            "user_id",
+        ]
+        lock_path = self.manifest_path.with_suffix(".lock")
+        with self._locked(lock_path):
+            if not self.manifest_path.exists() or self.manifest_path.stat().st_size == 0:
+                with self.manifest_path.open("w", encoding="utf-8", newline="") as file:
+                    writer = csv.DictWriter(file, fieldnames=fields, delimiter="\t")
+                    writer.writeheader()
+                    writer.writerow({field: meta.get(field, "") for field in fields})
+                    file.flush()
+                    os.fsync(file.fileno())
+                return
+
+            rows = []
+            found = False
+            fieldnames = fields
+            with self.manifest_path.open("r", encoding="utf-8", newline="") as file:
+                reader = csv.DictReader(file, delimiter="\t")
+                if reader.fieldnames:
+                    fieldnames = list(reader.fieldnames)
+                for row in reader:
+                    if row.get("recording_id") == meta["recording_id"]:
+                        rows.append({field: str(meta.get(field, "")) for field in fieldnames})
+                        found = True
+                    else:
+                        rows.append(row)
+
+            if not found:
+                rows.append({field: str(meta.get(field, "")) for field in fieldnames})
+
+            temp_manifest = self.manifest_path.with_suffix(".tsv.tmp")
+            with temp_manifest.open("w", encoding="utf-8", newline="") as file:
+                writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter="\t")
+                writer.writeheader()
+                writer.writerows(rows)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temp_manifest, self.manifest_path)
 
     @staticmethod
     @contextmanager

@@ -1,12 +1,15 @@
-import os
-import sys
-import json
+import atexit
 import csv
-import io
-import yaml
 from datetime import datetime
+import io
+import json
+import os
 from pathlib import Path
-from urllib.parse import urlencode
+import socket
+import subprocess
+import sys
+import time
+import yaml
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, '../../')))
@@ -21,7 +24,6 @@ from dotenv import load_dotenv
 from services.nlp_annotation_app.models import (
     db, User, CleanTeleText, CleaningLog, AnnotationResult, SkippedRecord
 )
-from shared.recording_auth import create_recording_token
 
 load_dotenv()
 
@@ -30,9 +32,62 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-nlp-annotation-secret-ke
 app.config['RECORDING_SERVICE_URL'] = os.getenv(
     'RECORDING_SERVICE_URL', 'http://127.0.0.1:5001/'
 )
-app.config['RECORDING_TOKEN_SECRET'] = os.getenv(
-    'RECORDING_TOKEN_SECRET', app.config['SECRET_KEY']
-)
+
+_recorder_process = None
+
+def get_python_executable() -> str:
+    """Find the virtualenv python binary with project dependencies."""
+    candidates = [
+        os.path.join(sys.prefix, 'bin', 'python'),
+        os.path.join(sys.prefix, 'bin', 'python3'),
+        os.path.join(os.environ.get('VIRTUAL_ENV', ''), 'bin', 'python'),
+        os.path.abspath(os.path.join(BASE_DIR, '../../.venv/bin/python')),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return sys.executable
+
+def is_port_in_use(port: int = 5001, host: str = '127.0.0.1') -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+def start_recorder_service(wait_until_ready: bool = False) -> None:
+    global _recorder_process
+    if is_port_in_use(5001):
+        return
+
+    recorder_script = os.path.abspath(
+        os.path.join(BASE_DIR, '../recording_app/app.py')
+    )
+    if not os.path.exists(recorder_script):
+        return
+
+    py_exec = get_python_executable()
+    print(f"Starting Recorder service on http://127.0.0.1:5001 using {py_exec} ...")
+    _recorder_process = subprocess.Popen(
+        [py_exec, recorder_script],
+        cwd=os.path.dirname(recorder_script),
+        env=os.environ.copy(),
+    )
+
+    def _cleanup():
+        global _recorder_process
+        if _recorder_process and _recorder_process.poll() is None:
+            _recorder_process.terminate()
+            try:
+                _recorder_process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                _recorder_process.kill()
+
+    atexit.register(_cleanup)
+
+    if wait_until_ready:
+        for _ in range(30):
+            if is_port_in_use(5001):
+                break
+            time.sleep(0.1)
 
 # Use Neon PostgreSQL — same connection string as scraper/cleaner services.
 # Set NEON_DATABASE_URL in your .env file.
@@ -319,14 +374,9 @@ def annotate():
 
 
 @app.route('/record')
-@login_required
 def record_audio():
-    token = create_recording_token(
-        app.config['RECORDING_TOKEN_SECRET'], current_user.id, current_user.email
-    )
-    base_url = app.config['RECORDING_SERVICE_URL']
-    separator = '&' if '?' in base_url else '?'
-    return redirect(f"{base_url}{separator}{urlencode({'token': token})}")
+    start_recorder_service(wait_until_ready=True)
+    return redirect(app.config.get('RECORDING_SERVICE_URL', 'http://127.0.0.1:5001/'))
 
 # --- API Endpoints ---
 
@@ -674,4 +724,7 @@ def logout():
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+    # In debug mode with Werkzeug reloader, only spawn in the main parent process
+    if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
+        start_recorder_service(wait_until_ready=False)
     app.run(debug=True, port=5000)

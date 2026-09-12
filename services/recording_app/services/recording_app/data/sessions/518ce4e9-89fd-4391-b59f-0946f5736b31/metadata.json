@@ -1,0 +1,19 @@
+{
+  "session_id": "518ce4e9-89fd-4391-b59f-0946f5736b31",
+  "user_id": "local",
+  "prompt": "နံပါတ် ၉ ကို ရွေးပါ",
+  "sample_rate": 16000,
+  "bit_depth": 16,
+  "channels": 1,
+  "status": "ready",
+  "next_sequence": 4,
+  "bytes_received": 128512,
+  "created_at": "2026-09-12T05:36:04.312113+00:00",
+  "updated_at": "2026-09-12T05:36:10.714596+00:00",
+  "expires_at": "2026-09-12T06:36:04.312113+00:00",
+  "recording_id": "5e8dced9-27d4-44fa-87bf-f90891766dde",
+  "duration_seconds": 4.016,
+  "sha256": "98a2759ac3af9c2711777eb94d792265b22c677a3397878f7f3853a5db15630c",
+  "storage_path": "recordings/2026-09-12/5e8dced9-27d4-44fa-87bf-f90891766dde.wav",
+  "completed_at": "2026-09-12T05:36:10.714583+00:00"
+}

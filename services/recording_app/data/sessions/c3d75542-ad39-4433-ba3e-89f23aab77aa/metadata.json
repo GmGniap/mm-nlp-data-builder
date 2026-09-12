@@ -1,0 +1,19 @@
+{
+  "session_id": "c3d75542-ad39-4433-ba3e-89f23aab77aa",
+  "user_id": "local",
+  "prompt": "နေကောင်းလား",
+  "sample_rate": 16000,
+  "bit_depth": 16,
+  "channels": 1,
+  "status": "ready",
+  "next_sequence": 8,
+  "bytes_received": 239616,
+  "created_at": "2026-09-08T16:12:22.159137+00:00",
+  "updated_at": "2026-09-08T16:12:31.844019+00:00",
+  "expires_at": "2026-09-08T17:12:22.159137+00:00",
+  "recording_id": "b7bdb9c1-91d9-42c8-89c7-3275570814fe",
+  "duration_seconds": 7.488,
+  "sha256": "f8708d56784587c8c8cd21ace85062e8af1b3ed294d9da59f5238c90ade96fec",
+  "storage_path": "recordings/2026-09-08/b7bdb9c1-91d9-42c8-89c7-3275570814fe.wav",
+  "completed_at": "2026-09-08T16:12:31.844005+00:00"
+}

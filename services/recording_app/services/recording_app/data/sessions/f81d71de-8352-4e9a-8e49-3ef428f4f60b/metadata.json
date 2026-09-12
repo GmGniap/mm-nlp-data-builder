@@ -1,0 +1,19 @@
+{
+  "session_id": "f81d71de-8352-4e9a-8e49-3ef428f4f60b",
+  "user_id": "local",
+  "prompt": "ရွေးချယ်မှု ၁ ကို နှိပ်ပါ",
+  "sample_rate": 16000,
+  "bit_depth": 16,
+  "channels": 1,
+  "status": "ready",
+  "next_sequence": 5,
+  "bytes_received": 139008,
+  "created_at": "2026-09-12T05:34:49.216434+00:00",
+  "updated_at": "2026-09-12T05:34:54.580739+00:00",
+  "expires_at": "2026-09-12T06:34:49.216434+00:00",
+  "recording_id": "35564b7a-0c9b-475e-ab75-622c756930c6",
+  "duration_seconds": 4.344,
+  "sha256": "2c5bcc4ab42dfc33a90d7d153cc099f867156e951bcfa2fcb4c7ca1b077954c3",
+  "storage_path": "recordings/2026-09-12/35564b7a-0c9b-475e-ab75-622c756930c6.wav",
+  "completed_at": "2026-09-12T05:34:54.580714+00:00"
+}

@@ -78,11 +78,9 @@ App will start on `http://127.0.0.1:5000`.
 
 ### 5. Run Speech Recording Service
 
-Set the same `RECORDING_TOKEN_SECRET` for both services, then run:
-
 ```bash
 uv run --with-requirements services/recording_app/requirements.txt \
   flask --app services.recording_app.app run --port 5001
 ```
 
-Open the recorder through the authenticated **Record Audio** navigation item in the annotation app. See `services/recording_app/README.md` for storage, cleanup, API, and deployment details.
+The recorder can be opened directly or through the **Record Audio** navigation item in the annotation app. See `services/recording_app/README.md` for storage, cleanup, API, and deployment details.

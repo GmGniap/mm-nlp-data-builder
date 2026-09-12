@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import os
 import sys
-from functools import wraps
 from pathlib import Path
-from typing import Callable, TypeVar
 
 import click
-from flask import Flask, Response, g, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, render_template, request, send_file
+from dotenv import load_dotenv
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -17,18 +16,16 @@ PROJECT_ROOT = BASE_DIR.parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from shared.recording_auth import verify_recording_token
+load_dotenv(PROJECT_ROOT / ".env")
+
 from services.recording_app.storage import RecordingError, RecordingStore
 
-
-View = TypeVar("View", bound=Callable)
+LOCAL_USER_ID = "local"
 
 
 def create_app(test_config: dict | None = None) -> Flask:
     app = Flask(__name__)
     app.config.from_mapping(
-        RECORDING_TOKEN_SECRET=os.getenv("RECORDING_TOKEN_SECRET", "dev-recording-token-secret"),
-        RECORDING_TOKEN_MAX_AGE=int(os.getenv("RECORDING_TOKEN_MAX_AGE", "3600")),
         RECORDING_STORAGE_ROOT=os.getenv(
             "RECORDING_STORAGE_ROOT", str(BASE_DIR / "data")
         ),
@@ -84,7 +81,6 @@ def create_app(test_config: dict | None = None) -> Flask:
         return jsonify({"status": "ok"})
 
     @app.get("/api/v1/config")
-    @require_recording_token
     def api_config():
         return jsonify(
             {
@@ -101,7 +97,6 @@ def create_app(test_config: dict | None = None) -> Flask:
         )
 
     @app.get("/api/v1/prompts")
-    @require_recording_token
     def api_prompts():
         prompt_path = Path(app.config["RECORDING_PROMPTS_FILE"])
         if not prompt_path.is_file():
@@ -114,7 +109,6 @@ def create_app(test_config: dict | None = None) -> Flask:
         return jsonify({"prompts": prompts[:1_000]})
 
     @app.post("/api/v1/sessions")
-    @require_recording_token
     def create_recording_session():
         payload = request.get_json(silent=True) or {}
         try:
@@ -122,19 +116,23 @@ def create_app(test_config: dict | None = None) -> Flask:
         except (TypeError, ValueError):
             return error_response("invalid_sample_rate", "Sample rate must be an integer.", 400)
 
+        overwrite_recording_id = payload.get("overwrite_recording_id")
+        if overwrite_recording_id is not None:
+            overwrite_recording_id = str(overwrite_recording_id).strip() or None
+
         store = get_store()
         store.cleanup_expired_sessions()
         session = store.create_session(
-            user_id=g.recording_user["user_id"],
+            user_id=LOCAL_USER_ID,
             prompt=str(payload.get("prompt", "")),
             sample_rate=sample_rate,
             bit_depth=16,
             channels=1,
+            overwrite_recording_id=overwrite_recording_id,
         )
         return jsonify(public_session(session)), 201
 
     @app.put("/api/v1/sessions/<session_id>/chunks/<int:sequence>")
-    @require_recording_token
     def upload_recording_chunk(session_id: str, sequence: int):
         if request.mimetype != "application/octet-stream":
             return error_response(
@@ -143,7 +141,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         checksum = request.headers.get("X-Chunk-SHA256")
         result = get_store().append_chunk(
             session_id,
-            user_id=g.recording_user["user_id"],
+            user_id=LOCAL_USER_ID,
             sequence=sequence,
             source=request.stream,
             expected_sha256=checksum,
@@ -151,51 +149,53 @@ def create_app(test_config: dict | None = None) -> Flask:
         return jsonify(result)
 
     @app.post("/api/v1/sessions/<session_id>/complete")
-    @require_recording_token
     def complete_recording(session_id: str):
-        meta = get_store().finalize(session_id, user_id=g.recording_user["user_id"])
+        payload = request.get_json(silent=True) or {}
+        overwrite_recording_id = payload.get("overwrite_recording_id")
+        if overwrite_recording_id is not None:
+            overwrite_recording_id = str(overwrite_recording_id).strip() or None
+        meta = get_store().finalize(
+            session_id,
+            user_id=LOCAL_USER_ID,
+            overwrite_recording_id=overwrite_recording_id,
+        )
         return jsonify(public_recording(meta))
 
     @app.delete("/api/v1/sessions/<session_id>")
-    @require_recording_token
     def abort_recording(session_id: str):
-        get_store().abort_session(session_id, user_id=g.recording_user["user_id"])
+        get_store().abort_session(session_id, user_id=LOCAL_USER_ID)
         return "", 204
 
     @app.get("/api/v1/recordings")
-    @require_recording_token
     def list_recordings():
         try:
             limit = min(max(int(request.args.get("limit", "20")), 1), 100)
         except ValueError:
             return error_response("invalid_limit", "Limit must be an integer.", 400)
         recordings = get_store().list_recordings(
-            user_id=g.recording_user["user_id"], limit=limit
+            user_id=LOCAL_USER_ID, limit=limit
         )
         return jsonify({"recordings": [public_recording(item) for item in recordings]})
 
     @app.get("/api/v1/recordings/<recording_id>")
-    @require_recording_token
     def get_recording_metadata(recording_id: str):
         meta, _ = get_store().get_recording(
-            recording_id, user_id=g.recording_user["user_id"]
+            recording_id, user_id=LOCAL_USER_ID
         )
         return jsonify(public_recording(meta))
 
     @app.get("/api/v1/recordings/<recording_id>/audio")
-    @require_recording_token
     def get_recording_audio(recording_id: str):
         _, audio_path = get_store().get_recording(
-            recording_id, user_id=g.recording_user["user_id"]
+            recording_id, user_id=LOCAL_USER_ID
         )
         response = send_file(audio_path, mimetype="audio/wav", conditional=True)
         response.headers["Cache-Control"] = "private, no-store, max-age=0"
         return response
 
     @app.delete("/api/v1/recordings/<recording_id>")
-    @require_recording_token
     def delete_recording(recording_id: str):
-        get_store().delete_recording(recording_id, user_id=g.recording_user["user_id"])
+        get_store().delete_recording(recording_id, user_id=LOCAL_USER_ID)
         return "", 204
 
     @app.cli.command("cleanup-recordings")
@@ -207,34 +207,6 @@ def create_app(test_config: dict | None = None) -> Flask:
     return app
 
 
-def require_recording_token(view: View) -> View:
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        header = request.headers.get("Authorization", "")
-        if not header.startswith("Bearer "):
-            return error_response("authentication_required", "Recording access is required.", 401)
-        token = header.removeprefix("Bearer ").strip()
-        if not token:
-            return error_response("authentication_required", "Recording access is required.", 401)
-        try:
-            g.recording_user = verify_recording_token(
-                secret=current_app_config("RECORDING_TOKEN_SECRET"),
-                token=token,
-                max_age=current_app_config("RECORDING_TOKEN_MAX_AGE"),
-            )
-        except ValueError as exc:
-            return error_response("invalid_token", str(exc), 401)
-        return view(*args, **kwargs)
-
-    return wrapped  # type: ignore[return-value]
-
-
-def current_app_config(key: str):
-    from flask import current_app
-
-    return current_app.config[key]
-
-
 def get_store() -> RecordingStore:
     from flask import current_app
 
@@ -242,7 +214,7 @@ def get_store() -> RecordingStore:
 
 
 def public_session(meta: dict) -> dict:
-    return {
+    data = {
         key: meta[key]
         for key in (
             "session_id",
@@ -255,6 +227,9 @@ def public_session(meta: dict) -> dict:
             "channels",
         )
     }
+    if meta.get("overwrite_recording_id"):
+        data["overwrite_recording_id"] = meta["overwrite_recording_id"]
+    return data
 
 
 def public_recording(meta: dict) -> dict:

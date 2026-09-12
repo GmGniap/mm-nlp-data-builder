@@ -18,16 +18,19 @@ const elements = {
     playback: document.querySelector('#playback'),
     savedDuration: document.querySelector('#savedDuration'),
     savedRate: document.querySelector('#savedRate'),
+    retryButton: document.querySelector('#retryButton'),
 };
 
 const state = {
     phase: 'booting',
-    token: null,
     prompts: [],
     promptIndex: -1,
     randomOrder: [],
     sessionId: null,
     recordingId: null,
+    lastSaved: null,
+    pendingOverwriteRecordingId: null,
+    overwriteRecordingId: null,
     audioContext: null,
     mediaStream: null,
     sourceNode: null,
@@ -48,20 +51,8 @@ const state = {
     stopping: false,
 };
 
-function readToken() {
-    const url = new URL(window.location.href);
-    const token = url.searchParams.get('token');
-    if (token) {
-        sessionStorage.setItem('recordingToken', token);
-        url.searchParams.delete('token');
-        history.replaceState({}, document.title, url.pathname + url.search + url.hash);
-    }
-    return token || sessionStorage.getItem('recordingToken');
-}
-
 async function api(path, options = {}) {
     const headers = new Headers(options.headers || {});
-    headers.set('Authorization', `Bearer ${state.token}`);
     if (options.body && typeof options.body === 'string') headers.set('Content-Type', 'application/json');
     const response = await fetch(path, { ...options, headers, cache: 'no-store' });
     if (!response.ok) {
@@ -107,7 +98,11 @@ function formatTime(totalSeconds) {
     return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-function nextPrompt() {
+function nextPrompt(clearOverwrite = true) {
+    if (clearOverwrite) {
+        state.pendingOverwriteRecordingId = null;
+        state.overwriteRecordingId = null;
+    }
     if (!state.prompts.length) return;
     const mode = elements.promptMode.value;
     if (mode === 'random') {
@@ -216,12 +211,21 @@ async function startRecording() {
         await state.audioContext.audioWorklet.addModule('/static/pcm-recorder-worklet.js');
         await state.audioContext.resume();
 
+        const sessionPayload = {
+            prompt: elements.promptText.value.trim(),
+            sample_rate: state.audioContext.sampleRate,
+        };
+        if (state.pendingOverwriteRecordingId) {
+            sessionPayload.overwrite_recording_id = state.pendingOverwriteRecordingId;
+            state.overwriteRecordingId = state.pendingOverwriteRecordingId;
+            state.pendingOverwriteRecordingId = null;
+        } else {
+            state.overwriteRecordingId = null;
+        }
+
         const session = await api('/api/v1/sessions', {
             method: 'POST',
-            body: JSON.stringify({
-                prompt: elements.promptText.value.trim(),
-                sample_rate: state.audioContext.sampleRate,
-            }),
+            body: JSON.stringify(sessionPayload),
         });
         state.sessionId = session.session_id;
         state.nextSequence = session.next_sequence;
@@ -344,12 +348,17 @@ async function saveRecording() {
     clearError();
     setPhase('uploading', 'Finalizing WAV file…');
     try {
+        const completePayload = {};
+        if (state.overwriteRecordingId) {
+            completePayload.overwrite_recording_id = state.overwriteRecordingId;
+        }
         const recording = await api(`/api/v1/sessions/${state.sessionId}/complete`, {
-            method: 'POST', body: '{}',
+            method: 'POST',
+            body: JSON.stringify(completePayload),
         });
         state.recordingId = recording.recording_id;
         const audioResponse = await fetch(recording.audio_url, {
-            headers: { Authorization: `Bearer ${state.token}` }, cache: 'no-store',
+            cache: 'no-store',
         });
         if (!audioResponse.ok) throw new Error('Saved audio could not be loaded for review.');
         const audioBlob = await audioResponse.blob();
@@ -360,12 +369,44 @@ async function saveRecording() {
         elements.savedRate.textContent = `${recording.sample_rate.toLocaleString()} Hz`;
         elements.reviewPanel.hidden = false;
         state.sessionId = null;
+        const currentPrompt = elements.promptText.value;
+        const currentPromptIndex = state.promptIndex;
+        const currentPromptCounter = elements.promptCounter.textContent;
+        state.lastSaved = {
+            recordingId: recording.recording_id,
+            prompt: recording.prompt || currentPrompt,
+            promptIndex: currentPromptIndex,
+            promptCounterText: currentPromptCounter,
+        };
+        state.overwriteRecordingId = null;
         setPhase('saved', 'Recording saved successfully.');
-        nextPrompt();
+        nextPrompt(false);
     } catch (error) {
         setPhase('review', 'Finalization failed. Retry or discard this capture.');
         showError(error.message);
     }
+}
+
+function retryRecording() {
+    if (!state.lastSaved) return;
+    const toRetry = state.lastSaved;
+    if (elements.playback) {
+        elements.playback.pause();
+    }
+    revokePlayback();
+    elements.promptText.value = toRetry.prompt;
+    if (toRetry.promptIndex >= 0) {
+        state.promptIndex = toRetry.promptIndex;
+        if (state.prompts.length) {
+            elements.promptCounter.textContent = toRetry.promptCounterText || `Prompt ${state.promptIndex + 1} of ${state.prompts.length}`;
+        }
+    }
+    state.pendingOverwriteRecordingId = toRetry.recordingId;
+    elements.elapsed.textContent = '00:00';
+    clearError();
+    setPhase('ready', 'Retrying previous recording. Ready to record (saving will overwrite previous file).');
+    elements.recordButton.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    elements.recordButton.focus();
 }
 
 async function abortSessionQuietly() {
@@ -384,6 +425,8 @@ async function discardRecording() {
     state.queuedBytes = 0;
     state.uploadError = null;
     state.nextSequence = 0;
+    state.pendingOverwriteRecordingId = null;
+    state.overwriteRecordingId = null;
     elements.elapsed.textContent = '00:00';
     clearError();
     setPhase('ready', 'Draft discarded. Ready to record.');
@@ -398,12 +441,6 @@ function revokePlayback() {
 }
 
 async function initialize() {
-    state.token = readToken();
-    if (!state.token) {
-        setPhase('unauthorized', 'Open the recorder from the annotation application.');
-        showError('No signed recording access token was provided.');
-        return;
-    }
     try {
         const [config, promptData] = await Promise.all([
             api('/api/v1/config'),
@@ -427,6 +464,7 @@ elements.recordButton.addEventListener('click', () => {
     else startRecording();
 });
 elements.saveButton.addEventListener('click', saveRecording);
+elements.retryButton?.addEventListener('click', retryRecording);
 elements.discardButton.addEventListener('click', discardRecording);
 elements.nextPromptButton.addEventListener('click', nextPrompt);
 elements.promptMode.addEventListener('change', () => {

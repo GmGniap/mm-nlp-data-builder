@@ -203,6 +203,8 @@ textarea:focus, select:focus, button:focus-visible {
 .button:hover:not(:disabled) { border-color: rgba(255, 255, 255, 0.28); }
 .button:disabled { opacity: 0.4; cursor: not-allowed; }
 .button.primary { color: #07120d; border-color: var(--green); background: var(--green); }
+.button.warning { color: #1c1404; border-color: var(--amber); background: var(--amber); }
+.button.warning:hover:not(:disabled) { border-color: #ffd07a; background: #ffd07a; }
 .button.danger { color: #ffaaaa; }
 .button.ghost { min-height: 38px; padding: 7px 12px; }
 
@@ -212,6 +214,7 @@ textarea:focus, select:focus, button:focus-visible {
 .metadata div { padding: 14px; border-radius: 12px; background: rgba(255, 255, 255, 0.035); }
 .metadata dt { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; }
 .metadata dd { margin: 6px 0 0; font-weight: 800; }
+.review-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
 
 .privacy-note { display: flex; gap: 12px; margin-top: 20px; color: var(--muted); font-size: 0.8rem; }
 .privacy-note strong { color: var(--ink); }
