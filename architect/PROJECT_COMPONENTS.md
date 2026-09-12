@@ -35,26 +35,44 @@ The database models reside on Neon PostgreSQL and are decoupled across two speci
 
 ---
 
-### Component C: NLP Annotation Web Platform (`services/nlp_annotation_app/`)
+### Component C: Core Web Platform & Gateway (`services/`)
 
-#### Modules & Interfaces:
+The core platform manages application initialization, authentication, global UI layouts, and microservice orchestration:
+1. `app.py`: Main Flask application factory (`create_app`) and entrypoint. Includes `ProxyFix` middleware for reverse-proxy compatibility.
+2. `extensions.py`: Central SQLAlchemy `db` and Flask-Login `login_manager` instances.
+3. `models.py`: Core `User` model, password hashing, and user loader.
+4. `services_manager.py`: Local development manager for auxiliary microservices (e.g. speech recorder).
+5. `templates/`: Central shared templates (`base.html`, `dashboard.html`, `login.html`, `register.html`).
+
+---
+
+### Component D: NLP Annotation Feature Module (`services/nlp_annotation_app/`)
+
+Self-contained feature module plugged into the core platform via Flask Blueprint:
 1. `annotation_config.yaml`:
    Configures dynamic field definitions (Metadata fields `id`, `source`, `text`, `key_phrase`; Sub-Task 1 & 2 Polarization binary groups; Sub-Task 3 Severity binary groups).
-2. `app.py`:
-   - Auth routes (`/login`, `/register`, `/logout`)
-   - Dashboard metrics route (`/dashboard`)
-   - Annotation SPA endpoints:
-     - `/api/config`: Loads active field schema and project parameters
-     - `/api/state`: Returns state and field values for current line/record
-     - `/api/update`: Saves live text or binary field changes to database (`payload_json`)
-     - `/api/navigate` & `/api/goto`: Line jump & queue navigation
-     - `/api/add` & `/api/delete`: Interactive record creation and removal
-     - `/api/save`: Exports annotations to CSV, TSV, or JSON
-3. `templates/`:
-   - `base.html`: Modern layout navigation bar
-   - `login.html`, `register.html`: Clean authentication forms
-   - `dashboard.html`: Progress counters and scraped message list
-   - `annotate.html`: Arloo UI with line-jump toolbar, progress counters, auto-save status, main text highlighting, binary task toggle buttons, Padauk/Noto Sans font support, and keyboard shortcuts (`Left/Right Arrow`, `Ctrl+S`).
+2. `routes.py`:
+   - Feature Blueprint (`annotation_bp`) mounted at `/annotation`
+   - UI endpoint: `/annotation/`
+   - Namespaced REST API endpoints:
+     - `/annotation/api/config`: Loads active field schema and project parameters
+     - `/annotation/api/state`: Returns state and field values for current line/record
+     - `/annotation/api/submit` & `/annotation/api/skip`: Handles annotation submissions and skips
+     - `/annotation/api/update`: Saves live text or binary field changes to database (`payload_json`)
+     - `/annotation/api/navigate` & `/annotation/api/goto`: Line jump & queue navigation
+     - `/annotation/api/add` & `/annotation/api/delete`: Interactive record creation and removal
+     - `/annotation/api/save`: Exports annotations to CSV, TSV, or JSON
+3. `models.py`: Feature models (`CleanTeleText`, `CleaningLog`, `AnnotationResult`, `SkippedRecord`) mapping to shared schemas.
+4. `templates/annotate.html`: Feature UI using `ANNOTATION_API_BASE` for dynamic API requests.
+
+---
+
+### Component E: Speech Recording Microservice (`services/recording_app/`)
+
+Browser-based audio collection microservice running on port 5001 (or via reverse proxy):
+1. `app.py`: Signed API, prompt streaming, and cleanup CLI.
+2. `storage.py`: Bounded chunks and atomic WAV finalization.
+3. `templates/recorder.html` & `static/`: AudioWorklet and state machine.
 
 ---
 

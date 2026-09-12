@@ -22,20 +22,36 @@ This repository is aimed to build essential tools for Myanmar Natural Language P
 │   └── models.py                  # Shared SQLAlchemy database models for messages & annotations
 │
 ├── services/
-│   ├── telegram_scraper/          # Python Developer Agent (Telegram Scraping)
+│   ├── app.py                     # Main Flask platform entrypoint & factory (Reverse-proxy ready)
+│   ├── extensions.py              # Central SQLAlchemy and LoginManager instances
+│   ├── models.py                  # Core User model & auth logic
+│   ├── services_manager.py        # Microservice process lifecycle manager (spawns recorder)
+│   ├── templates/                 # Global UI templates (base, dashboard, login, register)
+│   │
+│   ├── telegram_scraper/          # Python Developer Agent (Telegram Scraping & Cleaning)
 │   │   ├── config.example.yaml    # Config-driven target channels & fetch parameters
-│   │   ├── scraper.py             # Telethon/Pyrogram scraper implementation
+│   │   ├── scraper.py             # Telethon scraper implementation
+│   │   ├── cleaner.py             # Sentence splitting & cleaning pipeline
 │   │   ├── storage.py             # DB persistence adapter
 │   │   ├── cron_job.sh            # Cron job automation runner (uv enabled)
 │   │   ├── README.md              # Agent 2 developer guide
 │   │   └── requirements.txt       # Telegram scraping dependencies
 │   │
-│   └── nlp_annotation_app/        # Full-Stack Developer Agent (NLP Annotation UI)
-│       ├── app.py                 # Flask web application entrypoint (Arloo integrated)
-│       ├── models.py              # Application models (Users, Annotations, Scraped Data)
-│       ├── templates/             # UI Templates (login, register, dashboard, annotate)
-│       ├── README.md              # Agent 3 developer guide
-│       └── requirements.txt       # Web UI & NLP dependencies
+│   ├── nlp_annotation_app/        # Full-Stack Developer Agent (NLP Annotation Feature Module)
+│   │   ├── routes.py              # Namespaced annotation Blueprint (/annotation, /annotation/api/*)
+│   │   ├── models.py              # Annotation data models (CleanTeleText, AnnotationResult)
+│   │   ├── annotation_config.yaml # Dynamic task & field schema
+│   │   ├── templates/             # Feature UI Templates (annotate.html)
+│   │   ├── README.md              # Feature developer guide
+│   │   └── requirements.txt       # Web UI & NLP dependencies
+│   │
+│   └── recording_app/             # Browser speech-recording microservice
+│       ├── app.py                 # Signed API, prompt loading, and cleanup CLI
+│       ├── storage.py             # Bounded chunks and atomic WAV finalization
+│       ├── templates/             # Accessible recorder interface
+│       ├── static/                # AudioWorklet, recorder state machine, styles
+│       ├── tests/                 # API, ownership, lifecycle, and storage tests
+│       └── README.md              # Recorder deployment and API guide
 │
 └── .github/
     └── workflows/
@@ -62,8 +78,17 @@ uv pip install -r services/telegram_scraper/requirements.txt -r services/nlp_ann
 uv run python services/telegram_scraper/scraper.py --dry-run
 ```
 
-### 4. Run Flask Annotation Platform
+### 4. Run Flask NLP Platform
 ```bash
-uv run python services/nlp_annotation_app/app.py
+uv run python services/app.py
 ```
 App will start on `http://127.0.0.1:5000`.
+
+### 5. Run Speech Recording Service
+
+```bash
+uv run --with-requirements services/recording_app/requirements.txt \
+  flask --app services.recording_app.app run --port 5001
+```
+
+The recorder can be opened directly or through the **Record Audio** navigation item in the annotation app. See `services/recording_app/README.md` for storage, cleanup, API, and deployment details.

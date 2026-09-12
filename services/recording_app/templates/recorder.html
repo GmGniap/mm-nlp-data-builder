@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Myanmar Speech Recorder</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='recorder.css') }}">
+</head>
+<body>
+    <main class="shell">
+        <header class="hero">
+            <div>
+                <p class="eyebrow">MM NLP Data Builder</p>
+                <h1>Speech Recorder</h1>
+                <p class="lede">Read the prompt naturally. Audio streams to bounded disk storage and is finalized as mono PCM WAV.</p>
+            </div>
+            <div class="hero-actions">
+                <a id="backToMainButton" href="{{ main_app_url }}" class="button ghost header-back-btn">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/>
+                    </svg>
+                    Back to main
+                </a>
+                <div id="serviceBadge" class="badge">Connecting</div>
+            </div>
+        </header>
+
+        <section class="panel prompt-panel" aria-labelledby="promptHeading">
+            <div class="panel-heading">
+                <div class="panel-heading-title">
+                    <p class="step">01 · Prompt</p>
+                    <h2 id="promptHeading">Recording text</h2>
+                </div>
+                <div class="prompt-actions">
+                    <div class="prompt-control-group">
+                        <label for="promptMode">Order</label>
+                        <select id="promptMode">
+                            <option value="ordered">Ordered</option>
+                            <option value="sequential">Loop</option>
+                            <option value="random">Random</option>
+                        </select>
+                    </div>
+                    <div class="prompt-control-group">
+                        <label for="namingMode">Naming</label>
+                        <select id="namingMode">
+                            <option value="hash">Default (Hash)</option>
+                            <option value="formatted">Formatted</option>
+                        </select>
+                    </div>
+                    <div id="annotatorGroup" class="annotator-group" hidden>
+                        <label for="annotatorInput">Annotator</label>
+                        <input id="annotatorInput" type="text" class="annotator-input" placeholder="e.g. ann01" maxlength="32">
+                    </div>
+                    <div class="jump-prompt-group">
+                        <label for="jumpPromptInput">Jump to number</label>
+                        <input id="jumpPromptInput" type="number" min="1" step="1" class="jump-prompt-input" placeholder="">
+                        <button id="jumpPromptButton" type="button" class="button ghost">Jump</button>
+                    </div>
+                    <button id="nextPromptButton" type="button" class="button ghost">Next prompt</button>
+                </div>
+            </div>
+            <textarea id="promptText" lang="my" rows="4" maxlength="2000" placeholder="Enter or load a Myanmar prompt"></textarea>
+            <p id="promptCounter" class="hint">Custom prompt</p>
+        </section>
+
+        <section class="panel recorder-panel" aria-labelledby="recordHeading">
+            <div class="panel-heading">
+                <div>
+                    <p class="step">02 · Record</p>
+                    <h2 id="recordHeading">Capture audio</h2>
+                </div>
+                <label class="sample-rate">Target rate
+                    <select id="sampleRate">
+                        <option value="16000">16 kHz</option>
+                        <option value="48000">48 kHz</option>
+                    </select>
+                </label>
+            </div>
+
+            <div class="meter-wrap" aria-hidden="true">
+                <div id="meter" class="meter"></div>
+            </div>
+
+            <div class="record-core">
+                <button id="recordButton" type="button" class="record-button" aria-pressed="false">
+                    <span class="record-dot"></span>
+                    <span id="recordButtonLabel">Start recording</span>
+                </button>
+                <div class="timer-block">
+                    <span id="elapsed" class="timer">00:00</span>
+                    <span id="limit" class="limit">/ 02:00</span>
+                </div>
+            </div>
+
+            <div id="status" class="status" role="status" aria-live="polite">Ready to request microphone access.</div>
+            <div id="error" class="error" role="alert" hidden></div>
+
+            <div class="actions">
+                <button id="discardButton" type="button" class="button danger" disabled>Discard</button>
+                <button id="saveButton" type="button" class="button primary" disabled>Save recording</button>
+            </div>
+        </section>
+
+        <section id="reviewPanel" class="panel review-panel" hidden aria-labelledby="reviewHeading">
+            <div>
+                <p class="step">03 · Review</p>
+                <h2 id="reviewHeading">Saved recording</h2>
+            </div>
+            <audio id="playback" controls preload="metadata"></audio>
+            <dl class="metadata">
+                <div><dt>Duration</dt><dd id="savedDuration">—</dd></div>
+                <div><dt>Sample rate</dt><dd id="savedRate">—</dd></div>
+                <div><dt>Format</dt><dd>Mono 16-bit PCM WAV</dd></div>
+            </dl>
+            <div class="review-actions">
+                <button id="retryButton" type="button" class="button warning">Retry</button>
+            </div>
+        </section>
+
+        <section class="privacy-note">
+            <strong>Privacy note</strong>
+            <span>Record only with the speaker’s consent. Incomplete sessions expire automatically.</span>
+        </section>
+    </main>
+
+    <script type="module" src="{{ url_for('static', filename='recorder.js') }}"></script>
+</body>
+</html>
