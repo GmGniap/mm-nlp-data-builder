@@ -3,6 +3,9 @@ const elements = {
     serviceBadge: document.querySelector('#serviceBadge'),
     promptText: document.querySelector('#promptText'),
     promptMode: document.querySelector('#promptMode'),
+    namingMode: document.querySelector('#namingMode'),
+    annotatorGroup: document.querySelector('#annotatorGroup'),
+    annotatorInput: document.querySelector('#annotatorInput'),
     jumpPromptInput: document.querySelector('#jumpPromptInput'),
     jumpPromptButton: document.querySelector('#jumpPromptButton'),
     nextPromptButton: document.querySelector('#nextPromptButton'),
@@ -85,6 +88,8 @@ function setPhase(phase, message) {
     elements.nextPromptButton.disabled = isRecording || busy;
     if (elements.jumpPromptInput) elements.jumpPromptInput.disabled = isRecording || busy;
     if (elements.jumpPromptButton) elements.jumpPromptButton.disabled = isRecording || busy;
+    if (elements.namingMode) elements.namingMode.disabled = isRecording || busy;
+    if (elements.annotatorInput) elements.annotatorInput.disabled = isRecording || busy;
     elements.sampleRate.disabled = isRecording || busy;
 }
 
@@ -243,6 +248,16 @@ async function startRecording() {
         return;
     }
 
+    if (elements.namingMode?.value === 'formatted') {
+        const annotator = elements.annotatorInput ? elements.annotatorInput.value.trim() : '';
+        if (!annotator) {
+            showError('Please enter an annotator username for formatted naming.');
+            if (elements.annotatorGroup) elements.annotatorGroup.hidden = false;
+            elements.annotatorInput?.focus();
+            return;
+        }
+    }
+
     setPhase('requesting', 'Requesting microphone access…');
     revokePlayback();
     try {
@@ -257,6 +272,9 @@ async function startRecording() {
         const sessionPayload = {
             prompt: elements.promptText.value.trim(),
             sample_rate: state.audioContext.sampleRate,
+            naming_mode: elements.namingMode ? elements.namingMode.value : 'hash',
+            annotator_username: elements.annotatorInput ? elements.annotatorInput.value.trim() : '',
+            prompt_order_number: state.promptIndex >= 0 ? state.promptIndex + 1 : 1,
         };
         if (state.pendingOverwriteRecordingId) {
             sessionPayload.overwrite_recording_id = state.pendingOverwriteRecordingId;
@@ -395,6 +413,19 @@ async function saveRecording() {
         if (state.overwriteRecordingId) {
             completePayload.overwrite_recording_id = state.overwriteRecordingId;
         }
+        completePayload.naming_mode = elements.namingMode ? elements.namingMode.value : 'hash';
+        if (completePayload.naming_mode === 'formatted') {
+            const annotator = elements.annotatorInput ? elements.annotatorInput.value.trim() : '';
+            if (!annotator) {
+                setPhase('review', 'Capture complete. Enter annotator username to save.');
+                showError('Please enter an annotator username for formatted naming.');
+                if (elements.annotatorGroup) elements.annotatorGroup.hidden = false;
+                elements.annotatorInput?.focus();
+                return;
+            }
+            completePayload.annotator_username = annotator;
+            completePayload.prompt_order_number = state.promptIndex >= 0 ? state.promptIndex + 1 : 1;
+        }
         const recording = await api(`/api/v1/sessions/${state.sessionId}/complete`, {
             method: 'POST',
             body: JSON.stringify(completePayload),
@@ -507,6 +538,24 @@ async function initialize() {
         if (elements.jumpPromptInput && state.prompts.length) {
             elements.jumpPromptInput.max = state.prompts.length;
         }
+        const savedNamingMode = localStorage.getItem('recorder_naming_mode');
+        if (savedNamingMode && ['hash', 'formatted'].includes(savedNamingMode) && elements.namingMode) {
+            elements.namingMode.value = savedNamingMode;
+        }
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlUser = urlParams.get('username') || urlParams.get('annotator') || urlParams.get('user');
+        const savedUser = localStorage.getItem('recorder_annotator_username');
+        if (elements.annotatorInput) {
+            if (urlUser) {
+                elements.annotatorInput.value = urlUser;
+                localStorage.setItem('recorder_annotator_username', urlUser);
+            } else if (savedUser) {
+                elements.annotatorInput.value = savedUser;
+            }
+        }
+        if (elements.annotatorGroup && elements.namingMode) {
+            elements.annotatorGroup.hidden = elements.namingMode.value !== 'formatted';
+        }
         if (state.prompts.length) nextPrompt();
         setPhase('ready', 'Ready to request microphone access.');
     } catch (error) {
@@ -534,6 +583,19 @@ elements.promptMode.addEventListener('change', () => {
     state.promptIndex = -1;
     state.randomOrder = [];
     nextPrompt();
+});
+elements.namingMode?.addEventListener('change', () => {
+    const isFormatted = elements.namingMode.value === 'formatted';
+    if (elements.annotatorGroup) {
+        elements.annotatorGroup.hidden = !isFormatted;
+        if (isFormatted && elements.annotatorInput && !elements.annotatorInput.value.trim()) {
+            elements.annotatorInput.focus();
+        }
+    }
+    localStorage.setItem('recorder_naming_mode', elements.namingMode.value);
+});
+elements.annotatorInput?.addEventListener('input', () => {
+    localStorage.setItem('recorder_annotator_username', elements.annotatorInput.value.trim());
 });
 window.addEventListener('beforeunload', event => {
     if (state.sessionId && !['saved', 'ready'].includes(state.phase)) {

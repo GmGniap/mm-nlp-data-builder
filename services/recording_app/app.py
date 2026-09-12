@@ -23,15 +23,29 @@ from services.recording_app.storage import RecordingError, RecordingStore
 LOCAL_USER_ID = "local"
 
 
+def resolve_app_path(raw_path: str | Path) -> Path:
+    """Resolve storage or prompts path to an absolute path, preventing CWD-dependent duplication."""
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path.resolve()
+    if (PROJECT_ROOT / path).exists() or (path.parts and path.parts[0] == "services"):
+        return (PROJECT_ROOT / path).resolve()
+    if (BASE_DIR / path).exists():
+        return (BASE_DIR / path).resolve()
+    return (BASE_DIR / path).resolve()
+
+
 def create_app(test_config: dict | None = None) -> Flask:
     app = Flask(__name__)
+    raw_storage_root = os.getenv(
+        "RECORDING_STORAGE_ROOT", str(BASE_DIR / "data")
+    )
+    raw_prompts_file = os.getenv(
+        "RECORDING_PROMPTS_FILE", str(BASE_DIR / "prompts.txt")
+    )
     app.config.from_mapping(
-        RECORDING_STORAGE_ROOT=os.getenv(
-            "RECORDING_STORAGE_ROOT", str(BASE_DIR / "data")
-        ),
-        RECORDING_PROMPTS_FILE=os.getenv(
-            "RECORDING_PROMPTS_FILE", str(BASE_DIR / "prompts.txt")
-        ),
+        RECORDING_STORAGE_ROOT=str(resolve_app_path(raw_storage_root)),
+        RECORDING_PROMPTS_FILE=str(resolve_app_path(raw_prompts_file)),
         RECORDING_MAX_DURATION_SECONDS=int(
             os.getenv("RECORDING_MAX_DURATION_SECONDS", "120")
         ),
@@ -50,6 +64,14 @@ def create_app(test_config: dict | None = None) -> Flask:
     )
     if test_config:
         app.config.update(test_config)
+        if "RECORDING_STORAGE_ROOT" in test_config:
+            app.config["RECORDING_STORAGE_ROOT"] = str(
+                resolve_app_path(test_config["RECORDING_STORAGE_ROOT"])
+            )
+        if "RECORDING_PROMPTS_FILE" in test_config:
+            app.config["RECORDING_PROMPTS_FILE"] = str(
+                resolve_app_path(test_config["RECORDING_PROMPTS_FILE"])
+            )
 
     app.config["MAX_CONTENT_LENGTH"] = app.config["RECORDING_MAX_REQUEST_BYTES"]
     app.extensions["recording_store"] = RecordingStore(
@@ -130,6 +152,10 @@ def create_app(test_config: dict | None = None) -> Flask:
         if overwrite_recording_id is not None:
             overwrite_recording_id = str(overwrite_recording_id).strip() or None
 
+        naming_mode = payload.get("naming_mode", "hash")
+        annotator_username = payload.get("annotator_username")
+        prompt_order_number = payload.get("prompt_order_number")
+
         store = get_store()
         store.cleanup_expired_sessions()
         session = store.create_session(
@@ -139,6 +165,9 @@ def create_app(test_config: dict | None = None) -> Flask:
             bit_depth=16,
             channels=1,
             overwrite_recording_id=overwrite_recording_id,
+            naming_mode=naming_mode,
+            annotator_username=annotator_username,
+            prompt_order_number=prompt_order_number,
         )
         return jsonify(public_session(session)), 201
 
@@ -164,10 +193,16 @@ def create_app(test_config: dict | None = None) -> Flask:
         overwrite_recording_id = payload.get("overwrite_recording_id")
         if overwrite_recording_id is not None:
             overwrite_recording_id = str(overwrite_recording_id).strip() or None
+        naming_mode = payload.get("naming_mode")
+        annotator_username = payload.get("annotator_username")
+        prompt_order_number = payload.get("prompt_order_number")
         meta = get_store().finalize(
             session_id,
             user_id=LOCAL_USER_ID,
             overwrite_recording_id=overwrite_recording_id,
+            naming_mode=naming_mode,
+            annotator_username=annotator_username,
+            prompt_order_number=prompt_order_number,
         )
         return jsonify(public_recording(meta))
 
@@ -239,6 +274,12 @@ def public_session(meta: dict) -> dict:
     }
     if meta.get("overwrite_recording_id"):
         data["overwrite_recording_id"] = meta["overwrite_recording_id"]
+    if meta.get("naming_mode"):
+        data["naming_mode"] = meta["naming_mode"]
+    if meta.get("annotator_username"):
+        data["annotator_username"] = meta["annotator_username"]
+    if meta.get("prompt_order_number") is not None:
+        data["prompt_order_number"] = meta["prompt_order_number"]
     return data
 
 
@@ -256,6 +297,9 @@ def public_recording(meta: dict) -> dict:
             "bytes_received",
             "sha256",
             "completed_at",
+            "naming_mode",
+            "annotator_username",
+            "prompt_order_number",
         )
     }
     if meta.get("recording_id"):

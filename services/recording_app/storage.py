@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import uuid
 import wave
@@ -86,6 +87,9 @@ class RecordingStore:
         bit_depth: int = 16,
         channels: int = 1,
         overwrite_recording_id: str | None = None,
+        naming_mode: str = "hash",
+        annotator_username: str | None = None,
+        prompt_order_number: int | str | None = None,
     ) -> dict:
         prompt = prompt.strip()
         if not prompt:
@@ -118,6 +122,9 @@ class RecordingStore:
             "updated_at": now.isoformat(),
             "expires_at": (now + timedelta(seconds=self.session_ttl_seconds)).isoformat(),
             "overwrite_recording_id": overwrite_recording_id,
+            "naming_mode": str(naming_mode or "hash").strip().lower(),
+            "annotator_username": str(annotator_username or "").strip(),
+            "prompt_order_number": prompt_order_number,
         }
         self._write_json_atomic(session_dir / "metadata.json", meta)
         return meta
@@ -195,6 +202,9 @@ class RecordingStore:
         *,
         user_id: str,
         overwrite_recording_id: str | None = None,
+        naming_mode: str | None = None,
+        annotator_username: str | None = None,
+        prompt_order_number: int | str | None = None,
     ) -> dict:
         session_dir = self._session_dir(session_id)
         with self._locked(session_dir / ".lock"):
@@ -210,16 +220,57 @@ class RecordingStore:
             if len(chunk_paths) != meta["next_sequence"]:
                 raise RecordingConflict("One or more audio chunks are missing.")
 
+            now = utc_now()
+            completed_at = now.isoformat()
+
+            effective_naming_mode = (
+                naming_mode
+                or meta.get("naming_mode")
+                or "hash"
+            ).strip().lower()
+            effective_annotator = (
+                annotator_username
+                if annotator_username is not None
+                else meta.get("annotator_username", "")
+            )
+            effective_order = (
+                prompt_order_number
+                if prompt_order_number is not None
+                else meta.get("prompt_order_number", 1)
+            )
+
             target_overwrite_id = overwrite_recording_id or meta.get("overwrite_recording_id")
             if target_overwrite_id:
                 _, existing_audio_path = self.get_recording(target_overwrite_id, user_id=user_id)
                 recording_id = target_overwrite_id
                 final_path = existing_audio_path
             else:
-                recording_id = str(uuid.uuid4())
-                day_dir = self.recordings_root / utc_now().strftime("%Y-%m-%d")
+                day_dir = self.recordings_root / now.strftime("%Y-%m-%d")
                 day_dir.mkdir(parents=True, exist_ok=True)
-                final_path = day_dir / f"{recording_id}.wav"
+                if effective_naming_mode == "formatted":
+                    completed_dt = datetime.fromisoformat(completed_at)
+                    date_str = completed_dt.strftime("%Y%m%d")
+                    time_str = completed_dt.strftime("%H%M%S")
+
+                    raw_username = str(effective_annotator).strip()
+                    sanitized_username = re.sub(r"[^\w\-]", "", raw_username.replace(" ", "_"))
+                    if not sanitized_username:
+                        sanitized_username = re.sub(r"[^\w\-]", "", str(user_id).replace(" ", "_")) or "annotator"
+
+                    raw_order = str(effective_order).strip()
+                    sanitized_order = re.sub(r"[^\w\-]", "", raw_order) or "1"
+
+                    base_id = f"{sanitized_username}_{date_str}_{time_str}_{sanitized_order}"
+                    recording_id = base_id
+                    final_path = day_dir / f"{recording_id}.wav"
+                    collision_idx = 1
+                    while final_path.exists():
+                        recording_id = f"{base_id}_{collision_idx}"
+                        final_path = day_dir / f"{recording_id}.wav"
+                        collision_idx += 1
+                else:
+                    recording_id = str(uuid.uuid4())
+                    final_path = day_dir / f"{recording_id}.wav"
 
             part_path = final_path.with_suffix(".wav.part")
 
@@ -251,8 +302,11 @@ class RecordingStore:
                     "duration_seconds": round(duration_seconds, 3),
                     "sha256": self._sha256_file(final_path),
                     "storage_path": str(final_path.relative_to(self.root)),
-                    "completed_at": iso_now(),
-                    "updated_at": iso_now(),
+                    "completed_at": completed_at,
+                    "updated_at": completed_at,
+                    "naming_mode": effective_naming_mode,
+                    "annotator_username": effective_annotator,
+                    "prompt_order_number": effective_order,
                 }
             )
             self._write_json_atomic(final_path.with_suffix(".json"), meta)

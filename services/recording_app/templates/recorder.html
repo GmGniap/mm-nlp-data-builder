@@ -28,17 +28,30 @@
 
         <section class="panel prompt-panel" aria-labelledby="promptHeading">
             <div class="panel-heading">
-                <div>
+                <div class="panel-heading-title">
                     <p class="step">01 · Prompt</p>
                     <h2 id="promptHeading">Recording text</h2>
                 </div>
                 <div class="prompt-actions">
-                    <label for="promptMode">Order</label>
-                    <select id="promptMode">
-                        <option value="ordered">Ordered</option>
-                        <option value="sequential">Loop</option>
-                        <option value="random">Random</option>
-                    </select>
+                    <div class="prompt-control-group">
+                        <label for="promptMode">Order</label>
+                        <select id="promptMode">
+                            <option value="ordered">Ordered</option>
+                            <option value="sequential">Loop</option>
+                            <option value="random">Random</option>
+                        </select>
+                    </div>
+                    <div class="prompt-control-group">
+                        <label for="namingMode">Naming</label>
+                        <select id="namingMode">
+                            <option value="hash">Default (Hash)</option>
+                            <option value="formatted">Formatted</option>
+                        </select>
+                    </div>
+                    <div id="annotatorGroup" class="annotator-group" hidden>
+                        <label for="annotatorInput">Annotator</label>
+                        <input id="annotatorInput" type="text" class="annotator-input" placeholder="e.g. ann01" maxlength="32">
+                    </div>
                     <div class="jump-prompt-group">
                         <label for="jumpPromptInput">Jump to number</label>
                         <input id="jumpPromptInput" type="number" min="1" step="1" class="jump-prompt-input" placeholder="">

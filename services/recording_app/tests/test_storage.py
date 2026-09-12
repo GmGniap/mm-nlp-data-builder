@@ -180,3 +180,73 @@ def test_retry_and_overwrite_recording_updates_file_and_manifest(store):
     assert len(manifest_lines2) == 2
     assert "ဒုတိယအသံ (ပြန်ဆိုထားသည်)" in manifest_lines2[1]
     assert "0.4" in manifest_lines2[1]
+
+
+def test_formatted_naming_format_and_completed_at(store):
+    session = store.create_session(
+        user_id="user42",
+        prompt="စမ်းသပ်မှု တစ်ခု",
+        sample_rate=16_000,
+        naming_mode="formatted",
+        annotator_username="annotator_01",
+        prompt_order_number=12,
+    )
+    audio = pcm_bytes()
+    store.append_chunk(
+        session["session_id"],
+        user_id="user42",
+        sequence=0,
+        source=io.BytesIO(audio),
+    )
+    completed = store.finalize(session["session_id"], user_id="user42")
+    assert completed["status"] == "ready"
+
+    rec_id = completed["recording_id"]
+    completed_at = completed["completed_at"]
+    completed_dt = datetime.fromisoformat(completed_at)
+    date_str = completed_dt.strftime("%Y%m%d")
+    time_str = completed_dt.strftime("%H%M%S")
+
+    expected_id = f"annotator_01_{date_str}_{time_str}_12"
+    assert rec_id == expected_id
+
+    # Verify files on disk match the formatted recording_id
+    metadata, audio_path = store.get_recording(rec_id, user_id="user42")
+    assert audio_path.name == f"{expected_id}.wav"
+    assert metadata["recording_id"] == expected_id
+
+
+def test_formatted_naming_collision_handling(store):
+    # First recording
+    session1 = store.create_session(
+        user_id="user1",
+        prompt="ပထမ",
+        sample_rate=16_000,
+        naming_mode="formatted",
+        annotator_username="ann",
+        prompt_order_number=1,
+    )
+    store.append_chunk(session1["session_id"], user_id="user1", sequence=0, source=io.BytesIO(pcm_bytes()))
+    completed1 = store.finalize(session1["session_id"], user_id="user1")
+
+    # Second recording immediately with same parameters: simulate same second or existing path
+    session2 = store.create_session(
+        user_id="user1",
+        prompt="ဒုတိယ",
+        sample_rate=16_000,
+        naming_mode="formatted",
+        annotator_username="ann",
+        prompt_order_number=1,
+    )
+    store.append_chunk(session2["session_id"], user_id="user1", sequence=0, source=io.BytesIO(pcm_bytes()))
+    completed2 = store.finalize(session2["session_id"], user_id="user1")
+
+    # Both recordings should exist and not clobber each other
+    meta1, path1 = store.get_recording(completed1["recording_id"], user_id="user1")
+    meta2, path2 = store.get_recording(completed2["recording_id"], user_id="user1")
+    assert path1.exists()
+    assert path2.exists()
+    assert completed1["recording_id"] != completed2["recording_id"]
+    assert completed2["recording_id"].startswith("ann_")
+    assert completed2["recording_id"].endswith("_1") or completed2["recording_id"].endswith("_1_1")
+

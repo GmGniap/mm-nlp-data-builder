@@ -12,7 +12,8 @@ import time
 import yaml
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.abspath(os.path.join(BASE_DIR, '../../')))
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, '../../'))
+sys.path.append(PROJECT_ROOT)
 
 from flask import Flask, render_template, redirect, url_for, flash, request, jsonify, Response, send_file
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
@@ -68,7 +69,7 @@ def start_recorder_service(wait_until_ready: bool = False) -> None:
     print(f"Starting Recorder service on http://127.0.0.1:5001 using {py_exec} ...")
     _recorder_process = subprocess.Popen(
         [py_exec, recorder_script],
-        cwd=os.path.dirname(recorder_script),
+        cwd=PROJECT_ROOT,
         env=os.environ.copy(),
     )
 
@@ -376,7 +377,12 @@ def annotate():
 @app.route('/record')
 def record_audio():
     start_recorder_service(wait_until_ready=True)
-    return redirect(app.config.get('RECORDING_SERVICE_URL', 'http://127.0.0.1:5001/'))
+    recorder_url = app.config.get('RECORDING_SERVICE_URL', 'http://127.0.0.1:5001/')
+    if current_user.is_authenticated and getattr(current_user, 'email', None):
+        username_short = current_user.email.split('@')[0]
+        sep = '&' if '?' in recorder_url else '?'
+        return redirect(f"{recorder_url}{sep}username={username_short}")
+    return redirect(recorder_url)
 
 # --- API Endpoints ---
 

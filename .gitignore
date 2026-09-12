@@ -1,3 +1,10 @@
+# Recording
+*.wav
+*.lock
+**/metadata.json
+/services/recording_app/data
+/services/recording_app/sessions
+
 # Credentials
 /services/telegram_scraper/config.yaml
 

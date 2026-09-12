@@ -28,7 +28,7 @@ button, textarea, select, input { font: inherit; }
 button, select { min-height: 44px; }
 
 .shell {
-    width: min(980px, calc(100% - 32px));
+    width: min(1040px, calc(100% - 32px));
     margin: 0 auto;
     padding: 48px 0 64px;
 }
@@ -99,22 +99,58 @@ h2 { font-size: 1.35rem; }
     border-radius: 22px;
     background: var(--panel);
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.22);
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .panel-heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 20px;
+    gap: 16px 20px;
     margin-bottom: 20px;
+    flex-wrap: wrap;
 }
 
-.prompt-actions, .sample-rate {
+.panel-heading-title {
+    flex: 0 0 auto;
+}
+
+.prompt-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px 12px;
+    color: var(--muted);
+    font-size: 0.85rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.sample-rate {
     display: flex;
     align-items: center;
     gap: 10px;
     color: var(--muted);
     font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.prompt-control-group,
+.jump-prompt-group,
+.annotator-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.prompt-actions .button {
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
 
 select, textarea {
@@ -152,6 +188,32 @@ select { padding: 0 12px; }
     cursor: not-allowed;
 }
 
+.annotator-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.annotator-group label {
+    white-space: nowrap;
+}
+
+.annotator-input {
+    width: 100px;
+    min-height: 38px;
+    padding: 0 10px;
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #0d1318;
+    text-align: center;
+}
+
+.annotator-input:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
 textarea {
     width: 100%;
     resize: vertical;
@@ -160,7 +222,7 @@ textarea {
     line-height: 1.75;
 }
 
-textarea:focus, select:focus, button:focus-visible, .jump-prompt-input:focus {
+textarea:focus, select:focus, button:focus-visible, .jump-prompt-input:focus, .annotator-input:focus {
     outline: 3px solid rgba(57, 217, 138, 0.35);
     outline-offset: 2px;
 }
@@ -271,10 +333,10 @@ textarea:focus, select:focus, button:focus-visible, .jump-prompt-input:focus {
 .privacy-note strong { color: var(--ink); }
 
 @media (max-width: 700px) {
-    .shell { width: min(100% - 20px, 980px); padding-top: 24px; }
+    .shell { width: min(100% - 20px, 1040px); padding-top: 24px; }
     .hero, .panel-heading, .record-core { align-items: stretch; flex-direction: column; }
     .hero-actions { align-self: flex-start; }
-    .prompt-actions { align-items: stretch; flex-wrap: wrap; }
+    .prompt-actions { align-items: stretch; justify-content: flex-start; }
     .record-button { width: 100%; }
     .timer-block { justify-content: center; }
     .review-panel { grid-template-columns: 1fr; }

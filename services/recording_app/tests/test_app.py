@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import wave
+from datetime import datetime
 
 import pytest
 
@@ -105,6 +107,17 @@ def test_standalone_page_has_retry_button(client):
     assert response.status_code == 200
     assert b'id="retryButton"' in response.data
     assert b"Retry" in response.data
+
+
+def test_standalone_page_has_file_naming_dropdown_next_to_order(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b'id="namingMode"' in response.data
+    assert b"Default (Hash)" in response.data
+    assert b"Formatted" in response.data
+    assert b'id="annotatorInput"' in response.data
+    body = response.data.decode("utf-8")
+    assert body.find('id="promptMode"') < body.find('id="namingMode"') < body.find('id="jumpPromptInput"')
 
 
 def test_standalone_page_has_jump_to_number_elements(client):
@@ -211,3 +224,76 @@ def test_api_retry_and_overwrite_round_trip(client):
     assert audio_resp.status_code == 200
     with wave.open(io.BytesIO(audio_resp.data), "rb") as wav_file:
         assert wav_file.getnframes() == 6_400
+
+
+def test_api_formatted_file_naming_round_trip(client):
+    response = client.post(
+        "/api/v1/sessions",
+        json={
+            "prompt": "စမ်းသပ် စာသား",
+            "sample_rate": 16000,
+            "naming_mode": "formatted",
+            "annotator_username": "mgmg",
+            "prompt_order_number": 5,
+        },
+    )
+    assert response.status_code == 201
+    session = response.get_json()
+    assert session["naming_mode"] == "formatted"
+    assert session["annotator_username"] == "mgmg"
+    assert session["prompt_order_number"] == 5
+
+    audio = b"\x10\x00" * 3_200
+    client.put(
+        f"/api/v1/sessions/{session['session_id']}/chunks/0",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "X-Chunk-SHA256": hashlib.sha256(audio).hexdigest(),
+        },
+        data=audio,
+    )
+
+    complete = client.post(
+        f"/api/v1/sessions/{session['session_id']}/complete",
+        json={
+            "naming_mode": "formatted",
+            "annotator_username": "mgmg",
+            "prompt_order_number": 5,
+        },
+    )
+    assert complete.status_code == 200
+    recording = complete.get_json()
+
+    # Format: <annotator_username_short>_<date>_<timestamp>_<prompt_order_number>
+    # Date: yyyymmdd. Timestamp: hr+minute+second in 2 digits. Derived from completed_at.
+    rec_id = recording["recording_id"]
+    completed_at = recording["completed_at"]
+    completed_dt = datetime.fromisoformat(completed_at)
+    expected_date = completed_dt.strftime("%Y%m%d")
+    expected_time = completed_dt.strftime("%H%M%S")
+    expected_id = f"mgmg_{expected_date}_{expected_time}_5"
+
+    assert rec_id == expected_id
+    assert recording["audio_url"] == f"/api/v1/recordings/{expected_id}/audio"
+
+    audio_response = client.get(recording["audio_url"])
+    assert audio_response.status_code == 200
+    assert audio_response.mimetype == "audio/wav"
+    with wave.open(io.BytesIO(audio_response.data), "rb") as wav_file:
+        assert wav_file.getframerate() == 16_000
+        assert wav_file.getnframes() == 3_200
+
+
+def test_storage_path_resolution_independent_of_cwd(monkeypatch, tmp_path):
+    from services.recording_app.app import BASE_DIR, PROJECT_ROOT, resolve_app_path
+
+    # Verify resolve_app_path with relative services path
+    resolved_root = resolve_app_path("services/recording_app/data")
+    assert resolved_root == PROJECT_ROOT / "services/recording_app/data"
+    assert resolved_root == BASE_DIR / "data"
+
+    # Verify when CWD is inside services/recording_app directory
+    monkeypatch.chdir(BASE_DIR)
+    app = create_app({"RECORDING_STORAGE_ROOT": "services/recording_app/data"})
+    assert app.config["RECORDING_STORAGE_ROOT"] == str(BASE_DIR / "data")
+    assert app.extensions["recording_store"].root == BASE_DIR / "data"
