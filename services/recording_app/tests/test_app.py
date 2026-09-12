@@ -107,6 +107,17 @@ def test_standalone_page_has_retry_button(client):
     assert b"Retry" in response.data
 
 
+def test_standalone_page_has_jump_to_number_elements(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"Jump to number" in response.data
+    assert b'id="jumpPromptInput"' in response.data
+    assert b'id="jumpPromptButton"' in response.data
+    # Verify jump elements are located in prompt-actions next to promptMode
+    body = response.data.decode("utf-8")
+    assert body.find('id="promptMode"') < body.find('id="jumpPromptInput"') < body.find('id="nextPromptButton"')
+
+
 def test_api_retry_and_overwrite_round_trip(client):
     session1 = create_session(client)
     audio1 = b"\x10\x00" * 3_200

@@ -2,6 +2,8 @@ const elements = {
     serviceBadge: document.querySelector('#serviceBadge'),
     promptText: document.querySelector('#promptText'),
     promptMode: document.querySelector('#promptMode'),
+    jumpPromptInput: document.querySelector('#jumpPromptInput'),
+    jumpPromptButton: document.querySelector('#jumpPromptButton'),
     nextPromptButton: document.querySelector('#nextPromptButton'),
     promptCounter: document.querySelector('#promptCounter'),
     sampleRate: document.querySelector('#sampleRate'),
@@ -80,6 +82,8 @@ function setPhase(phase, message) {
     elements.promptText.disabled = isRecording || busy;
     elements.promptMode.disabled = isRecording || busy;
     elements.nextPromptButton.disabled = isRecording || busy;
+    if (elements.jumpPromptInput) elements.jumpPromptInput.disabled = isRecording || busy;
+    if (elements.jumpPromptButton) elements.jumpPromptButton.disabled = isRecording || busy;
     elements.sampleRate.disabled = isRecording || busy;
 }
 
@@ -99,6 +103,7 @@ function formatTime(totalSeconds) {
 }
 
 function nextPrompt(clearOverwrite = true) {
+    clearError();
     if (clearOverwrite) {
         state.pendingOverwriteRecordingId = null;
         state.overwriteRecordingId = null;
@@ -121,6 +126,43 @@ function nextPrompt(clearOverwrite = true) {
     }
     elements.promptText.value = state.prompts[state.promptIndex];
     elements.promptCounter.textContent = `Prompt ${state.promptIndex + 1} of ${state.prompts.length}`;
+}
+
+function jumpToPrompt() {
+    clearError();
+    if (state.phase === 'recording' || ['requesting', 'stopping', 'uploading'].includes(state.phase)) {
+        return;
+    }
+    if (!state.prompts.length) {
+        showError('No prompts available to jump to.');
+        return;
+    }
+    const rawValue = elements.jumpPromptInput ? elements.jumpPromptInput.value.trim() : '';
+    if (!rawValue) {
+        showError('Please enter a prompt number.');
+        return;
+    }
+    const targetNumber = Number(rawValue);
+    if (!Number.isInteger(targetNumber) || targetNumber < 1 || targetNumber > state.prompts.length) {
+        showError(`Prompt number ${rawValue} is out of range. Please enter a number between 1 and ${state.prompts.length}.`);
+        if (elements.jumpPromptInput) {
+            elements.jumpPromptInput.focus();
+            elements.jumpPromptInput.select();
+        }
+        return;
+    }
+    state.pendingOverwriteRecordingId = null;
+    state.overwriteRecordingId = null;
+    state.promptIndex = targetNumber - 1;
+    elements.promptText.value = state.prompts[state.promptIndex];
+    elements.promptCounter.textContent = `Prompt ${state.promptIndex + 1} of ${state.prompts.length}`;
+    if (state.randomOrder && state.randomOrder.length) {
+        state.randomOrder = state.randomOrder.filter(idx => idx !== state.promptIndex);
+    }
+    if (elements.jumpPromptInput) {
+        elements.jumpPromptInput.focus();
+        elements.jumpPromptInput.select();
+    }
 }
 
 function floatToPcm16(samples) {
@@ -451,6 +493,9 @@ async function initialize() {
         elements.limit.textContent = `/ ${formatTime(state.maxDurationSeconds)}`;
         elements.serviceBadge.textContent = 'Service ready';
         elements.serviceBadge.classList.add('ready');
+        if (elements.jumpPromptInput && state.prompts.length) {
+            elements.jumpPromptInput.max = state.prompts.length;
+        }
         if (state.prompts.length) nextPrompt();
         setPhase('ready', 'Ready to request microphone access.');
     } catch (error) {
@@ -467,6 +512,13 @@ elements.saveButton.addEventListener('click', saveRecording);
 elements.retryButton?.addEventListener('click', retryRecording);
 elements.discardButton.addEventListener('click', discardRecording);
 elements.nextPromptButton.addEventListener('click', nextPrompt);
+elements.jumpPromptButton?.addEventListener('click', jumpToPrompt);
+elements.jumpPromptInput?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        jumpToPrompt();
+    }
+});
 elements.promptMode.addEventListener('change', () => {
     state.promptIndex = -1;
     state.randomOrder = [];
