@@ -3,3 +3,5 @@ PyYAML>=6.0.1
 SQLAlchemy>=2.0.37
 python-dotenv>=1.0.0
 psycopg2-binary>=2.9.9    # PostgreSQL driver for Neon (used by cleaner.py)
+pyarrow>=14.0.0
+boto3>=1.34.0

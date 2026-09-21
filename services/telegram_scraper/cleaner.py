@@ -437,6 +437,7 @@ def clean_and_upload(
     from_date: str | None = None,
     to_date: str | None = None,
     env: str | None = None,
+    category: str | None = None,
 ) -> None:
     """
     Main pipeline: read TelegramMessage → split → write CleanTeleText.
@@ -505,7 +506,9 @@ def clean_and_upload(
         if channel:
             channels = [str(channel)]
         else:
-            channels = [str(ch) for ch in config.get("scraping", {}).get("channels", [])]
+            from services.telegram_scraper.scraper import resolve_channels_for_category
+            resolved_chs, _ = resolve_channels_for_category(config, category=category)
+            channels = [str(ch) for ch in resolved_chs] if resolved_chs else []
             if not channels:
                 db_channels = session.query(TelegramMessage.channel_name).distinct().all()
                 channels = [ch[0] for ch in db_channels if ch[0]]
@@ -664,6 +667,9 @@ Examples:
   # Dry-run preview of incremental pass
   uv run python services/telegram_scraper/cleaner.py --dry-run
 
+  # Clean yesterday's closed 24-hour window (recommended for daily Airflow runs)
+  uv run python services/telegram_scraper/cleaner.py --yesterday
+
   # Backfill the last 7 days (today + previous 6)
   uv run python services/telegram_scraper/cleaner.py --lookback 7
 
@@ -683,21 +689,26 @@ Examples:
                         help="Environment to target ('dev' -> public schema, 'prod' -> production schema). Overrides config.yaml.")
     parser.add_argument("--channel", "-c", default=None, metavar="NAME",
                         help="Specific channel name to clean (default: all channels in config/DB).")
+    parser.add_argument("--category", default=None,
+                        help="Category to target (e.g. 'polarization' or 'news'). Filters channels.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview splits without writing to PostgreSQL.")
     parser.add_argument("--force", action="store_true",
                         help="Re-process already-completed day windows (deletes existing rows).")
 
-    # Date range — two mutually exclusive ways to specify the window
+    # Date range — mutually exclusive ways to specify the window
     date_group = parser.add_mutually_exclusive_group()
+    date_group.add_argument("--yesterday", action="store_true",
+                            help="Clean only yesterday's closed 24-hour calendar day. "
+                                 "Recommended for daily Airflow runs. Mutually exclusive with --lookback and --from-date.")
     date_group.add_argument("--lookback", type=int, default=None, metavar="DAYS",
                             help="Number of days to look back from today (inclusive). "
                                  "E.g. --lookback 7 = today + last 6 days. "
-                                 "Mutually exclusive with --from-date.")
+                                 "Mutually exclusive with --yesterday and --from-date.")
     date_group.add_argument("--from-date", metavar="YYYY-MM-DD", default=None,
                             help="Start of day range to clean (inclusive). "
                                  "Defaults to the day after the latest completed watermark. "
-                                 "Mutually exclusive with --lookback.")
+                                 "Mutually exclusive with --yesterday and --lookback.")
 
     parser.add_argument("--to-date", metavar="YYYY-MM-DD", default=None,
                         help="End of day range to clean (inclusive). "
@@ -714,9 +725,14 @@ if __name__ == "__main__":
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # --lookback N → from_date = today - (N-1) days  (same convention as scraper.py)
     resolved_from_date = args.from_date
-    if args.lookback is not None:
+    resolved_to_date = args.to_date
+
+    if args.yesterday:
+        yesterday_str = (datetime.now(timezone.utc).date() - timedelta(days=1)).strftime("%Y-%m-%d")
+        resolved_from_date = yesterday_str
+        resolved_to_date = yesterday_str
+    elif args.lookback is not None:
         if args.lookback < 1:
             import sys as _sys
             print("error: --lookback must be at least 1", file=_sys.stderr)
@@ -732,7 +748,8 @@ if __name__ == "__main__":
         force=args.force,
         dict_path=args.dict,
         from_date=resolved_from_date,
-        to_date=args.to_date,
+        to_date=resolved_to_date,
         env=args.env,
+        category=args.category,
     )
 

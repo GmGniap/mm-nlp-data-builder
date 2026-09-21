@@ -15,6 +15,10 @@ case "$1" in
         shift
         exec python /app/services/telegram_scraper/login_telegram.py "$@"
         ;;
+    archival)
+        shift
+        exec python /app/services/telegram_scraper/archival.py "$@"
+        ;;
     *)
         # If user passes custom args like "--lookback 7" directly or a shell command
         if [[ "$1" == --* ]] || [ -z "$1" ]; then
