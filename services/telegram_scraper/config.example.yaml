@@ -8,12 +8,39 @@ telegram:
   api_id: "YOUR_TELEGRAM_API_ID"     # Obtain from https://my.telegram.org
   api_hash: "YOUR_TELEGRAM_API_HASH"
   session_name: "telegram_scraper"
+  # StringSession values for rotating accounts across categories (or via TELEGRAM_STRING_SESSION_1 / TELEGRAM_STRING_SESSION_2)
+  string_sessions:
+    - "1BVts..."
+    - "1BVts..."
 
 scraping:
-  channels:
-    - "durov"                         # Target Telegram channel username or ID
+  max_parallel_channels: 5
+  inter_channel_delay_seconds: 60
+  db_upload_chunk_size: 1000
   limit_per_channel: 50               # Max messages to fetch per channel per run
+  lookback_days: 2
   keywords_filter: []                 # Optional whitelist of keywords
+
+  categories:
+    polarization:
+      schedule_cron: "0 0 * * *"
+      channels:
+        - "shweba000"
+    news:
+      schedule_cron: "0 6 * * *"
+      channels:
+        - "durov"
+
+# ─── Archival to AWS S3 (Cold Storage) ─────────────────────────────────────
+archival:
+  retention_days: 30
+  scan_safety_offset_days: 2
+  batch_chunk_size: 5000
+  compression: "snappy"
+  s3:
+    bucket_name: "my-s3-archive-bucket"
+    region: "ap-southeast-1"
+
 
 # ─── PostgreSQL (Neon) ─────────────────────────────────────────────────────
 # Single database for ALL tables (scraper + annotation).

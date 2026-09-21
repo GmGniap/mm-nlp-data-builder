@@ -140,19 +140,19 @@ docker run --rm \
   telegram_scraper:latest scraper --dry-run
 ```
 
-**Run Scraper with Mounted Config:**
+**Run Scraper in Production Mode (Yesterday Closed Day):**
 ```bash
 docker run --rm \
   -v $(pwd)/services/telegram_scraper/config.yaml:/app/services/telegram_scraper/config.yaml:ro \
   -e NEON_DATABASE_URL="postgresql://..." \
-  telegram_scraper:latest scraper --lookback 2
+  telegram_scraper:latest scraper --yesterday
 ```
 
-**Run Cleaner in Docker:**
+**Run Cleaner in Production Mode (Yesterday Closed Day):**
 ```bash
 docker run --rm \
   -e NEON_DATABASE_URL="postgresql://..." \
-  telegram_scraper:latest cleaner --lookback 2
+  telegram_scraper:latest cleaner --yesterday
 ```
 
 ---

@@ -234,10 +234,14 @@ def init_annotation_db(pg_url: str, schema: str = "public"):
     Returns the schema-configured engine.
     """
     engine = create_engine(pg_url, pool_pre_ping=True)
-    if schema and schema != "public":
-        with engine.connect() as conn:
-            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
-            conn.commit()
-    schema_engine = engine.execution_options(schema_translate_map={None: schema})
+    if engine.dialect.name == "postgresql":
+        if schema and schema != "public":
+            with engine.connect() as conn:
+                conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+                conn.commit()
+        schema_engine = engine.execution_options(schema_translate_map={None: schema})
+    else:
+        schema_engine = engine
     AnnotationBase.metadata.create_all(schema_engine)
     return schema_engine
+
