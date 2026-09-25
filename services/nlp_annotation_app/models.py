@@ -61,13 +61,6 @@ class CleanTeleText(db.Model):
     source_message_id   = _col(_SharedCleanTeleText, "source_message_id")
     created_at          = _col(_SharedCleanTeleText, "created_at")
 
-    annotation_results = db.relationship(
-        "AnnotationResult", back_populates="clean_line", cascade="all, delete-orphan"
-    )
-    skipped_records = db.relationship(
-        "SkippedRecord", back_populates="clean_line", cascade="all, delete-orphan"
-    )
-
     def __repr__(self) -> str:
         return f"<CleanTeleText msg:{self.telegram_message_id} line:{self.line_index}>"
 
@@ -153,9 +146,8 @@ class AnnotationResult(db.Model):
     __tablename__ = "annotation_results"
 
     id              = _col(_SharedAnnotationResult, "id")
-    clean_line_id   = db.Column(
-        db.Integer, db.ForeignKey("clean_tele_text.id"), nullable=False, index=True
-    )
+    # Logical FK to clean_tele_text.id (independent metadata, no DB-level FK)
+    clean_line_id   = db.Column(db.Integer, nullable=False, index=True)
     user_id         = db.Column(
         db.Integer, db.ForeignKey("users.id"), nullable=False, index=True
     )
@@ -164,7 +156,6 @@ class AnnotationResult(db.Model):
     created_at      = _col(_SharedAnnotationResult, "created_at")
     updated_at      = _col(_SharedAnnotationResult, "updated_at")
 
-    clean_line = db.relationship("CleanTeleText", back_populates="annotation_results")
     user       = db.relationship("User", back_populates="annotation_results")
 
     def __repr__(self) -> str:
@@ -179,16 +170,14 @@ class SkippedRecord(db.Model):
     __tablename__ = "skipped_records"
 
     id              = _col(_SharedSkippedRecord, "id")
-    clean_line_id   = db.Column(
-        db.Integer, db.ForeignKey("clean_tele_text.id"), nullable=False, index=True
-    )
+    # Logical FK to clean_tele_text.id (independent metadata, no DB-level FK)
+    clean_line_id   = db.Column(db.Integer, nullable=False, index=True)
     user_id         = db.Column(
         db.Integer, db.ForeignKey("users.id"), nullable=False, index=True
     )
     annotation_type = _col(_SharedSkippedRecord, "annotation_type")
     created_at      = _col(_SharedSkippedRecord, "created_at")
 
-    clean_line = db.relationship("CleanTeleText", back_populates="skipped_records")
     user       = db.relationship("User", back_populates="skipped_records")
 
     def __repr__(self) -> str:

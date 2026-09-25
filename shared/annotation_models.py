@@ -17,6 +17,11 @@ Key design notes
   constraint is added here because the two metadata objects are
   independent; data integrity is maintained by the cleaner pipeline.
 
+* AnnotationResult.clean_line_id and SkippedRecord.clean_line_id are
+  *logical* references to clean_tele_text.id (managed by the cleaner).
+  No DB-level FK constraint is added here to ensure the Annotation App
+  is completely decoupled from scraper and cleaner data lifecycles.
+
 * CleanTeleText carries denormalised channel_name and source_message_id
   columns so the Flask app can build Telegram deep-links without ever
   querying telegram_messages.
@@ -40,7 +45,14 @@ Usage
         User, CleanTeleText, CleaningLog, AnnotationResult,
         SkippedRecord, init_annotation_db
     )
-    engine = init_annotation_db("postgresql://user:pw@host/db?sslmode=require")
+    engine = init_annotation_db("<NEON_DATABASE_URL>")
+
+Database Migrations & Environment Updates
+-----------------------------------------
+When modifying models in this file (or fixing bugs that alter schema):
+    1. Check status:       python manage_db.py status --env dev
+    2. Make migration:     python manage_db.py makemigrations -m "<description>"
+    3. Reflect updates:    python manage_db.py reflect --env [dev|branch|prod]
 
 Only import this module in cleaner.py and the Flask annotation app.
 The scraper service must NOT import these models.
@@ -103,12 +115,6 @@ class CleanTeleText(AnnotationBase):
     category            = Column(String(50), nullable=True, index=True)
     source_message_id   = Column(BigInteger, nullable=True)
     created_at          = Column(DateTime, default=datetime.utcnow)
-
-    # Relationships
-    annotation_results = relationship("AnnotationResult", back_populates="clean_line",
-                                       cascade="all, delete-orphan")
-    skipped_records    = relationship("SkippedRecord", back_populates="clean_line",
-                                       cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<CleanTeleText msg:{self.telegram_message_id} line:{self.line_index}>"
@@ -178,7 +184,8 @@ class AnnotationResult(AnnotationBase):
     )
 
     id              = Column(Integer, primary_key=True)
-    clean_line_id   = Column(Integer, ForeignKey("clean_tele_text.id"), nullable=False, index=True)
+    # Logical FK to clean_tele_text.id (independent metadata, no DB-level FK)
+    clean_line_id   = Column(Integer, nullable=False, index=True)
     user_id         = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     annotation_type = Column(String(50), nullable=False, index=True)  # e.g. 'polarization'
     payload_json    = Column(Text, nullable=False)  # JSON blob of annotation fields
@@ -186,7 +193,6 @@ class AnnotationResult(AnnotationBase):
     updated_at      = Column(DateTime, nullable=True)
 
     # Relationships
-    clean_line = relationship("CleanTeleText", back_populates="annotation_results")
     user       = relationship("User", back_populates="annotation_results")
 
     def __repr__(self) -> str:
@@ -211,13 +217,13 @@ class SkippedRecord(AnnotationBase):
     )
 
     id              = Column(Integer, primary_key=True)
-    clean_line_id   = Column(Integer, ForeignKey("clean_tele_text.id"), nullable=False, index=True)
+    # Logical FK to clean_tele_text.id (independent metadata, no DB-level FK)
+    clean_line_id   = Column(Integer, nullable=False, index=True)
     user_id         = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     annotation_type = Column(String(50), nullable=False, index=True)  # e.g. 'polarization'
     created_at      = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
-    clean_line = relationship("CleanTeleText", back_populates="skipped_records")
     user       = relationship("User", back_populates="skipped_records")
 
     def __repr__(self) -> str:

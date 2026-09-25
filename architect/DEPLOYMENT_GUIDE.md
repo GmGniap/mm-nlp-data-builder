@@ -298,6 +298,6 @@ with DAG(
    ```
 6. [ ] **Apply Migrations**:
    ```bash
-   source .venv/bin/activate && python services/telegram_scraper/migrate_cleaner_category.py --env prod
+   source .venv/bin/activate && python manage_db.py reflect --env prod
    ```
 7. [ ] **Verify DAG Execution**: Unpause DAGs in Airflow Web UI and run dry-run validation.
