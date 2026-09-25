@@ -237,7 +237,7 @@ class CleanTeleExtraInfo(AnnotationBase):
     message_id          = Column(BigInteger, nullable=False, index=True)
     headline            = Column(Text, nullable=True)
     clean_info_date     = Column(String(100), nullable=True)
-    original_short_note = Column(String(255), nullable=True)
+    original_short_note = Column(Text, nullable=True)
     url_lists           = Column(Text, nullable=True)  # JSON-encoded array of URLs
     created_at          = Column(DateTime, default=datetime.utcnow)
 
@@ -323,6 +323,13 @@ def apply_annotation_migrations(engine, schema: str = "public", config: dict | N
                     conn.execute(text(f'ALTER TABLE "{tbl}" ADD COLUMN category VARCHAR(50)'))
                     conn.execute(text(f'CREATE INDEX IF NOT EXISTS "ix_{tbl}_category" ON "{tbl}" (category)'))
                 results["columns_added"].append(tbl)
+        # Ensure clean_tele_extra_info.original_short_note is TEXT in PostgreSQL
+        if is_postgres:
+            extra_tbl_name = "clean_tele_extra_info"
+            table_names = inspector.get_table_names(schema=schema if is_postgres else None)
+            if extra_tbl_name in table_names:
+                qual_extra_tbl = f'"{schema}"."{extra_tbl_name}"' if (schema and schema != "public") else f'"{extra_tbl_name}"'
+                conn.execute(text(f'ALTER TABLE {qual_extra_tbl} ALTER COLUMN original_short_note TYPE TEXT'))
         conn.commit()
 
     # Backfill historical records where category is NULL or empty

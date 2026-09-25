@@ -376,33 +376,37 @@ def parse_news_message(raw_text: str, run_date: str = "") -> tuple[str | None, s
 
     if len(lines) > 1:
         line2 = lines[1]
-        dateline_match = re.search(r"^([^\n\r၊,]+)[၊,]\s*([^\n\r]+)", line2)
-        if dateline_match:
-            date_raw = dateline_match.group(2).strip()
-            clean_date = standardize_news_date(date_raw, run_date=run_date)
-            if clean_date:
-                clean_info_date = clean_date
-                original_short_note = line2
-                body_start_idx = 2
-        else:
-            # Check for English dateline format: 2 digits + words (month) + 4 digits (e.g. "23 Sep 2026 By MPA", "24 Sep 2026 By Khaosod English")
-            eng_date_match = re.search(r"\b([\d၀-၉]{1,2}[-/\s]+[A-Za-z]+[-/\s]+[\d၀-၉]{4})\b", line2)
-            if eng_date_match:
-                date_raw = eng_date_match.group(1).strip()
+        line2_words = line2.split()
+        # A dateline / short note is concise (location + date + optional agency credit, e.g. "မကွေး၊ စက်တင်ဘာ ၂၀ ရက်").
+        # If line 2 is long (> 25 words or > 250 characters), it is regular body text, not a short_note.
+        if len(line2_words) <= 25 and len(line2) <= 250:
+            dateline_match = re.search(r"^([^\n\r၊,]+)[၊,]\s*([^\n\r]+)", line2)
+            if dateline_match:
+                date_raw = dateline_match.group(2).strip()
                 clean_date = standardize_news_date(date_raw, run_date=run_date)
                 if clean_date:
                     clean_info_date = clean_date
                     original_short_note = line2
                     body_start_idx = 2
             else:
-                # Check if line2 directly matches a date without location/comma
-                has_month = any(mm in line2 for mm in MYANMAR_TO_ENG_MONTHS)
-                if has_month:
-                    clean_date = standardize_news_date(line2, run_date=run_date)
+                # Check for English dateline format: 2 digits + words (month) + 4 digits (e.g. "23 Sep 2026 By MPA", "24 Sep 2026 By Khaosod English")
+                eng_date_match = re.search(r"\b([\d၀-၉]{1,2}[-/\s]+[A-Za-z]+[-/\s]+[\d၀-၉]{4})\b", line2)
+                if eng_date_match:
+                    date_raw = eng_date_match.group(1).strip()
+                    clean_date = standardize_news_date(date_raw, run_date=run_date)
                     if clean_date:
                         clean_info_date = clean_date
                         original_short_note = line2
                         body_start_idx = 2
+                else:
+                    # Check if line2 directly matches a date without location/comma
+                    has_month = any(mm in line2 for mm in MYANMAR_TO_ENG_MONTHS)
+                    if has_month:
+                        clean_date = standardize_news_date(line2, run_date=run_date)
+                        if clean_date:
+                            clean_info_date = clean_date
+                            original_short_note = line2
+                            body_start_idx = 2
 
     body_text = "\n".join(lines[body_start_idx:])
     return headline, clean_info_date, original_short_note, url_lists, body_text

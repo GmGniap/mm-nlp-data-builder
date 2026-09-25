@@ -109,6 +109,7 @@ try:
     from airflow import DAG
     from airflow.decorators import task_group
     from airflow.providers.docker.operators.docker import DockerOperator
+    from airflow.operators.empty import EmptyOperator
     from docker.types import Mount
 
     STAGING_DIR = PROJECT_DIR / "data" / "clean_staging"
@@ -151,15 +152,17 @@ try:
             read_only=True,
         )
 
+        # Dummy Task - Starting Point
+        start_dummy = EmptyOperator(task_id="start")
+
         # -------------------------------------------------------------------
-        # Category: Polarization TaskGroup
+        # Category: Polarization Cleaning TaskGroup
         # -------------------------------------------------------------------
         @task_group(group_id="clean_category_polarization")
-        def polarization_group():
-            polar_clean_tasks = []
+        def clean_polarization_group():
             for ch in POLARIZATION_CHANNELS:
                 clean_task_id = ch.lstrip("@").replace("-", "_")
-                clean_op = DockerOperator(
+                DockerOperator(
                     task_id=f"clean_polarization_{clean_task_id}",
                     image="telegram_scraper:latest",
                     api_version="auto",
@@ -170,32 +173,15 @@ try:
                     mounts=[staging_mount, config_mount],
                     environment=common_env,
                 )
-                polar_clean_tasks.append(clean_op)
-
-            upload_polar = DockerOperator(
-                task_id="upload_polarization_batch",
-                image="telegram_scraper:latest",
-                api_version="auto",
-                auto_remove=True,
-                command="cleaner --category polarization --upload-staged --stage-dir /app/data/clean_staging",
-                docker_url="unix://var/run/docker.sock",
-                network_mode="bridge",
-                mounts=[staging_mount, config_mount],
-                environment=common_env,
-            )
-
-            for t in polar_clean_tasks:
-                t >> upload_polar
 
         # -------------------------------------------------------------------
-        # Category: News TaskGroup
+        # Category: News Cleaning TaskGroup
         # -------------------------------------------------------------------
         @task_group(group_id="clean_category_news")
-        def news_group():
-            news_clean_tasks = []
+        def clean_news_group():
             for ch in NEWS_CHANNELS:
                 clean_task_id = ch.lstrip("@").replace("-", "_")
-                clean_op = DockerOperator(
+                DockerOperator(
                     task_id=f"clean_news_{clean_task_id}",
                     image="telegram_scraper:latest",
                     api_version="auto",
@@ -206,26 +192,49 @@ try:
                     mounts=[staging_mount, config_mount],
                     environment=common_env,
                 )
-                news_clean_tasks.append(clean_op)
 
-            upload_news = DockerOperator(
-                task_id="upload_news_batch",
-                image="telegram_scraper:latest",
-                api_version="auto",
-                auto_remove=True,
-                command="cleaner --category news --upload-staged --stage-dir /app/data/clean_staging",
-                docker_url="unix://var/run/docker.sock",
-                network_mode="bridge",
-                mounts=[staging_mount, config_mount],
-                environment=common_env,
-            )
+        # -------------------------------------------------------------------
+        # Barrier: Wait for all channel cleaning across BOTH categories
+        # -------------------------------------------------------------------
+        all_cleaning_complete = EmptyOperator(
+            task_id="all_cleaning_complete",
+            trigger_rule="all_success",
+        )
 
-            for t in news_clean_tasks:
-                t >> upload_news
+        # -------------------------------------------------------------------
+        # Category Upload Tasks
+        # -------------------------------------------------------------------
+        upload_polar = DockerOperator(
+            task_id="upload_polarization_batch",
+            image="telegram_scraper:latest",
+            api_version="auto",
+            auto_remove=True,
+            command="cleaner --category polarization --upload-staged --stage-dir /app/data/clean_staging",
+            docker_url="unix://var/run/docker.sock",
+            network_mode="bridge",
+            mounts=[staging_mount, config_mount],
+            environment=common_env,
+        )
 
-        # Trigger both category groups in parallel
-        polarization_group()
-        news_group()
+        upload_news = DockerOperator(
+            task_id="upload_news_batch",
+            image="telegram_scraper:latest",
+            api_version="auto",
+            auto_remove=True,
+            command="cleaner --category news --upload-staged --stage-dir /app/data/clean_staging",
+            docker_url="unix://var/run/docker.sock",
+            network_mode="bridge",
+            mounts=[staging_mount, config_mount],
+            environment=common_env,
+        )
+
+        # -------------------------------------------------------------------
+        # Dependency Flow
+        # -------------------------------------------------------------------
+        polar_tg = clean_polarization_group()
+        news_tg = clean_news_group()
+
+        start_dummy >> [polar_tg, news_tg] >> all_cleaning_complete >> [upload_polar, upload_news]
 
 except ImportError:
     pass

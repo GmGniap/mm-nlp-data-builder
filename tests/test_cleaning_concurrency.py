@@ -127,6 +127,19 @@ def test_parse_news_message():
     assert "24 Sep 2026 By Khaosod English" not in b_eng2
     assert "လူ ၄ ဦး ဒဏ်ရာရရှိခဲ့ကြောင်း သိရသည်။" in b_eng2
 
+    # 7. Line 2 is long body text (> 25 words), should NOT be treated as short_note
+    long_line2_words = (
+        "ရန်ကုန်မြို့တွင် ဆန္ဒပြမှုများ ဖြစ်ပွားခဲ့ပြီး စစ်ကောင်စီတပ်များက အကြမ်းဖက် ပစ်ခတ်ဖြိုခွင်းခဲ့ရာ ပြည်သူ ၅ ဦး သေဆုံးခဲ့ကြောင်း ဒေသခံများထံမှ သိရှိရပါသည်။ "
+        "စက်တင်ဘာ ၂၀ ရက်နေ့တွင် ဖြစ်ပွားခဲ့သော အဆိုပါ ဖြစ်စဉ်ကြောင့် ပြည်သူများ စိုးရိမ်ထိတ်လန့်လျက် ရှိကြသည်။ အသေးစိတ် အချက်အလက်များကို ဆက်လက် စုံစမ်းဆဲ ဖြစ်ပါသည်။"
+    )
+    assert len(long_line2_words.split()) > 25
+    raw_long_news = f"သတင်းခေါင်းစဉ်\n{long_line2_words}\nနောက်ထပ် အကြောင်းအရာများ။"
+    h_long, d_long, n_long, _, b_long = parse_news_message(raw_long_news, run_date="2026-09-20")
+    assert h_long == "သတင်းခေါင်းစဉ်"
+    assert d_long is None  # Should not extract dateline from long body text
+    assert n_long is None  # Should not be short_note
+    assert long_line2_words in b_long  # Preserved in body_text for sentence splitting
+
 
 def test_clean_polarization_sentence_filters():
     # 1. Purely English sentence -> dropped
