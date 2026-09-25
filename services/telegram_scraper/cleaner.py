@@ -113,6 +113,9 @@ ENG_MONTH_TO_NUM: dict[str, int] = {
     "January": 1, "February": 2, "March": 3, "April": 4,
     "May": 5, "June": 6, "July": 7, "August": 8,
     "September": 9, "October": 10, "November": 11, "December": 12,
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4,
+    "Jun": 6, "Jul": 7, "Aug": 8,
+    "Sep": 9, "Sept": 9, "Oct": 10, "Nov": 11, "Dec": 12,
 }
 
 
@@ -123,7 +126,7 @@ def normalize_myanmar_digits(text_str: str) -> str:
 
 def standardize_news_date(date_raw: str, run_date: str = "") -> str | None:
     """
-    Standardize a Myanmar date string (e.g. 'စက်တင်ဘာ ၂၀ ရက်' or '၂၀၂၃ ခုနှစ်၊ စက်တင်ဘာ ၂၀')
+    Standardize a date string (Myanmar or English, e.g. 'စက်တင်ဘာ ၂၀ ရက်' or '24 Sep 2026 By Khaosod English')
     into a standardized 'YYYY-MM-DD' date string.
     Year is resolved from date_raw, run_date, or scraping time (current year).
     """
@@ -149,6 +152,32 @@ def standardize_news_date(date_raw: str, run_date: str = "") -> str | None:
             return datetime(y, m, d).strftime("%Y-%m-%d")
         except ValueError:
             pass
+
+    # Check English formatted date: DD Month YYYY (e.g. '23 Sep 2026' or '24 September 2026')
+    eng_dmy_match = re.search(r"\b(\d{1,2})[-/\s]+([A-Za-z]+)[-/\s]+(\d{4})\b", norm)
+    if eng_dmy_match:
+        d = int(eng_dmy_match.group(1))
+        m_str = eng_dmy_match.group(2).capitalize()
+        y = int(eng_dmy_match.group(3))
+        m = ENG_MONTH_TO_NUM.get(m_str) or ENG_MONTH_TO_NUM.get(m_str[:3])
+        if m and 1 <= d <= 31:
+            try:
+                return datetime(y, m, d).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+
+    # Check English formatted date: Month DD, YYYY (e.g. 'Sep 23, 2026' or 'September 24, 2026')
+    eng_mdy_match = re.search(r"\b([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})\b", norm)
+    if eng_mdy_match:
+        m_str = eng_mdy_match.group(1).capitalize()
+        d = int(eng_mdy_match.group(2))
+        y = int(eng_mdy_match.group(3))
+        m = ENG_MONTH_TO_NUM.get(m_str) or ENG_MONTH_TO_NUM.get(m_str[:3])
+        if m and 1 <= d <= 31:
+            try:
+                return datetime(y, m, d).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
 
     matched_month: str | None = None
     month_num: int | None = None
@@ -356,14 +385,24 @@ def parse_news_message(raw_text: str, run_date: str = "") -> tuple[str | None, s
                 original_short_note = line2
                 body_start_idx = 2
         else:
-            # Check if line2 directly matches a date without location/comma
-            has_month = any(mm in line2 for mm in MYANMAR_TO_ENG_MONTHS)
-            if has_month:
-                clean_date = standardize_news_date(line2, run_date=run_date)
+            # Check for English dateline format: 2 digits + words (month) + 4 digits (e.g. "23 Sep 2026 By MPA", "24 Sep 2026 By Khaosod English")
+            eng_date_match = re.search(r"\b([\d၀-၉]{1,2}[-/\s]+[A-Za-z]+[-/\s]+[\d၀-၉]{4})\b", line2)
+            if eng_date_match:
+                date_raw = eng_date_match.group(1).strip()
+                clean_date = standardize_news_date(date_raw, run_date=run_date)
                 if clean_date:
                     clean_info_date = clean_date
                     original_short_note = line2
                     body_start_idx = 2
+            else:
+                # Check if line2 directly matches a date without location/comma
+                has_month = any(mm in line2 for mm in MYANMAR_TO_ENG_MONTHS)
+                if has_month:
+                    clean_date = standardize_news_date(line2, run_date=run_date)
+                    if clean_date:
+                        clean_info_date = clean_date
+                        original_short_note = line2
+                        body_start_idx = 2
 
     body_text = "\n".join(lines[body_start_idx:])
     return headline, clean_info_date, original_short_note, url_lists, body_text
@@ -564,9 +603,23 @@ def stage_channel_records(
 
     if extra_rows:
         extra_file = os.path.join(cat_dir, f"{norm_ch}_{run_date}_clean_tele_extra_info.jsonl")
+        existing_keys: set[tuple[str, int | str]] = set()
+        if os.path.exists(extra_file):
+            with open(extra_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            item = json.loads(line)
+                            k = (item.get("channel_name"), item.get("message_id") or item.get("headline"))
+                            existing_keys.add(k)
+                        except Exception:
+                            pass
         with open(extra_file, "a", encoding="utf-8") as f:
             for r in extra_rows:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                k = (r.get("channel_name"), r.get("message_id") or r.get("headline"))
+                if k not in existing_keys:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                    existing_keys.add(k)
 
     if error_rows:
         err_file = os.path.join(cat_dir, f"{norm_ch}_{run_date}_errors.jsonl")
@@ -617,6 +670,17 @@ def _process_channel_day(
         return {"msgs_processed": 0, "msgs_skipped": 0, "sentences_generated": 0, "skipped_day": True}
 
     cleaning_entry = None
+    if stage_dir and force:
+        cat_dir = os.path.join(stage_dir, category or "general")
+        norm_ch = channel_name.lstrip("@").lower()
+        for suffix in ["_clean_tele_text.jsonl", "_clean_tele_extra_info.jsonl", "_errors.jsonl"]:
+            old_f = os.path.join(cat_dir, f"{norm_ch}_{run_date}{suffix}")
+            if os.path.exists(old_f):
+                try:
+                    os.remove(old_f)
+                except Exception:
+                    pass
+
     if not dry_run and not stage_dir:
         cleaning_entry = start_cleaning_log(session, channel_name, run_date, category=category, force=force)
 
@@ -660,20 +724,26 @@ def _process_channel_day(
     staged_errors: list[dict] = []
 
     seen_hashes: set[str] = set()
+    seen_extra_keys: set[tuple[str, int | str]] = set()
 
     for msg in iter_messages_for_channel_window(session, channel_name, day_start, day_end):
         try:
+            # Intra-channel same-day deduplication: guarantee 1 row per unique raw text across categories
+            raw_text_clean = msg.message_text.strip() if msg.message_text else ""
+            if not raw_text_clean:
+                msgs_skipped += 1
+                continue
+
+            msg_hash = hashlib.sha256(raw_text_clean.encode("utf-8")).hexdigest()
+            if msg_hash in seen_hashes:
+                msgs_skipped += 1
+                continue
+            seen_hashes.add(msg_hash)
+
             # ---------------------------------------------------------------
             # 1. Polarization Category Pipeline
             # ---------------------------------------------------------------
             if cat_label == "polarization":
-                # In-memory intra-channel same-day deduplication
-                msg_hash = hashlib.sha256(msg.message_text.strip().encode("utf-8")).hexdigest()
-                if msg_hash in seen_hashes:
-                    msgs_skipped += 1
-                    continue
-                seen_hashes.add(msg_hash)
-
                 # Channel discovery logging
                 discovered = extract_telegram_channels(msg.message_text)
                 for d_ch in discovered:
@@ -723,28 +793,6 @@ def _process_channel_day(
             # ---------------------------------------------------------------
             elif cat_label == "news":
                 headline, clean_info_date, original_short_note, url_lists, body_text = parse_news_message(msg.message_text, run_date=run_date)
-                extra_record = {
-                    "channel_name": msg.channel_name,
-                    "category": category or "news",
-                    "message_id": msg.message_id,
-                    "headline": headline,
-                    "clean_info_date": clean_info_date,
-                    "original_short_note": original_short_note,
-                    "url_lists": json.dumps(url_lists, ensure_ascii=False) if url_lists else None,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                }
-                if stage_dir:
-                    staged_extras.append(extra_record)
-                elif not dry_run:
-                    session.add(CleanTeleExtraInfo(
-                        channel_name=msg.channel_name,
-                        category=category or "news",
-                        message_id=msg.message_id,
-                        headline=headline,
-                        clean_info_date=clean_info_date,
-                        original_short_note=original_short_note,
-                        url_lists=json.dumps(url_lists, ensure_ascii=False) if url_lists else None,
-                    ))
 
                 # Sentences: Headline is included at line_index = 0
                 body_sentences = split_myanmar_sentences(body_text, bigrams=bigrams)
@@ -757,6 +805,38 @@ def _process_channel_day(
                 if not total_sentences:
                     msgs_skipped += 1
                     continue
+
+                # Ensure exactly one extra info row per raw news text / message
+                extra_key = (msg.channel_name, msg.message_id or headline)
+                if extra_key not in seen_extra_keys:
+                    seen_extra_keys.add(extra_key)
+                    extra_record = {
+                        "channel_name": msg.channel_name,
+                        "category": category or "news",
+                        "message_id": msg.message_id,
+                        "headline": headline,
+                        "clean_info_date": clean_info_date,
+                        "original_short_note": original_short_note,
+                        "url_lists": json.dumps(url_lists, ensure_ascii=False) if url_lists else None,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    if stage_dir:
+                        staged_extras.append(extra_record)
+                    elif not dry_run:
+                        exists = session.query(CleanTeleExtraInfo.id).filter(
+                            CleanTeleExtraInfo.channel_name == msg.channel_name,
+                            CleanTeleExtraInfo.message_id == msg.message_id,
+                        ).first()
+                        if not exists:
+                            session.add(CleanTeleExtraInfo(
+                                channel_name=msg.channel_name,
+                                category=category or "news",
+                                message_id=msg.message_id,
+                                headline=headline,
+                                clean_info_date=clean_info_date,
+                                original_short_note=original_short_note,
+                                url_lists=json.dumps(url_lists, ensure_ascii=False) if url_lists else None,
+                            ))
 
                 msgs_processed += 1
                 for l_idx, sent in total_sentences:
@@ -956,31 +1036,52 @@ def upload_staged_data(config: dict, stage_dir: str, category: str, env: str | N
                 uploaded_texts += len(batch)
             files_to_delete.append(tf)
 
-        # Ingest clean_tele_extra_info
+        # Ingest clean_tele_extra_info with strict deduplication
         extra_files = list(cat_path.glob("*_clean_tele_extra_info.jsonl"))
-        for ef in extra_files:
-            batch = []
-            with open(ef, "r", encoding="utf-8") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    item = json.loads(line)
-                    if isinstance(item.get("created_at"), str):
-                        try:
-                            item["created_at"] = datetime.fromisoformat(item["created_at"])
-                        except Exception:
-                            item["created_at"] = datetime.now(timezone.utc)
-                    batch.append(item)
-                    if len(batch) >= 1000:
-                        session.bulk_insert_mappings(CleanTeleExtraInfo, batch)
-                        session.flush()
-                        uploaded_extras += len(batch)
-                        batch = []
-            if batch:
-                session.bulk_insert_mappings(CleanTeleExtraInfo, batch)
-                session.flush()
-                uploaded_extras += len(batch)
-            files_to_delete.append(ef)
+        if extra_files:
+            # Load existing (channel_name, message_id) to guarantee idempotency and uniqueness
+            existing_extra_keys: set[tuple[str, int | str]] = set()
+            try:
+                db_extras = session.query(CleanTeleExtraInfo.channel_name, CleanTeleExtraInfo.message_id).filter(
+                    CleanTeleExtraInfo.category == category
+                ).all()
+                existing_extra_keys = {(ch, mid) for ch, mid in db_extras if ch and mid is not None}
+            except Exception as e:
+                log.warning("Could not pre-fetch existing extra keys: %s", e)
+
+            seen_extra_keys: set[tuple[str, int | str]] = set()
+
+            for ef in extra_files:
+                batch = []
+                with open(ef, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        item = json.loads(line)
+                        ch = item.get("channel_name")
+                        msg_id = item.get("message_id")
+                        key = (ch, msg_id or item.get("headline"))
+                        if key in existing_extra_keys or key in seen_extra_keys:
+                            continue
+                        seen_extra_keys.add(key)
+                        existing_extra_keys.add(key)
+
+                        if isinstance(item.get("created_at"), str):
+                            try:
+                                item["created_at"] = datetime.fromisoformat(item["created_at"])
+                            except Exception:
+                                item["created_at"] = datetime.now(timezone.utc)
+                        batch.append(item)
+                        if len(batch) >= 1000:
+                            session.bulk_insert_mappings(CleanTeleExtraInfo, batch)
+                            session.flush()
+                            uploaded_extras += len(batch)
+                            batch = []
+                if batch:
+                    session.bulk_insert_mappings(CleanTeleExtraInfo, batch)
+                    session.flush()
+                    uploaded_extras += len(batch)
+                files_to_delete.append(ef)
 
         # Ingest errors
         err_files = list(cat_path.glob("*_errors.jsonl"))

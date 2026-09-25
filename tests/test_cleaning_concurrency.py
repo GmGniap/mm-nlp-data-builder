@@ -101,6 +101,32 @@ def test_parse_news_message():
     assert clean_date_num == "2024-03-15"
     assert orig_num == "မန္တလေး၊ ၁၅-၃-၂၀၂၄"
 
+    # 5. English dateline with 2-digit day + word month + 4-digit year (e.g. '23 Sep 2026 By MPA')
+    raw_eng_dateline_1 = (
+        "သတင်းခေါင်းစဉ်အသစ်\n"
+        "23 Sep 2026 By MPA\n"
+        "သတင်းအပြည့်အစုံ ဖော်ပြချက်ဖြစ်ပါသည်။"
+    )
+    h_eng1, d_eng1, n_eng1, _, b_eng1 = parse_news_message(raw_eng_dateline_1)
+    assert h_eng1 == "သတင်းခေါင်းစဉ်အသစ်"
+    assert d_eng1 == "2026-09-23"
+    assert n_eng1 == "23 Sep 2026 By MPA"
+    assert "23 Sep 2026 By MPA" not in b_eng1
+    assert "သတင်းအပြည့်အစုံ ဖော်ပြချက်ဖြစ်ပါသည်။" in b_eng1
+
+    # 6. English dateline with news agency attribution (e.g. '24 Sep 2026 By Khaosod English')
+    raw_eng_dateline_2 = (
+        "ဘန်ကောက်တွင် ဓားခုတ်မှုဖြစ်ပွား\n"
+        "24 Sep 2026 By Khaosod English\n"
+        "လူ ၄ ဦး ဒဏ်ရာရရှိခဲ့ကြောင်း သိရသည်။"
+    )
+    h_eng2, d_eng2, n_eng2, _, b_eng2 = parse_news_message(raw_eng_dateline_2)
+    assert h_eng2 == "ဘန်ကောက်တွင် ဓားခုတ်မှုဖြစ်ပွား"
+    assert d_eng2 == "2026-09-24"
+    assert n_eng2 == "24 Sep 2026 By Khaosod English"
+    assert "24 Sep 2026 By Khaosod English" not in b_eng2
+    assert "လူ ၄ ဦး ဒဏ်ရာရရှိခဲ့ကြောင်း သိရသည်။" in b_eng2
+
 
 def test_clean_polarization_sentence_filters():
     # 1. Purely English sentence -> dropped
@@ -315,3 +341,211 @@ def test_migration_cleaner_category_backfill(tmp_path, mock_config):
 
         log_row = conn.execute(text("SELECT channel_name, category FROM cleaning_logs")).fetchone()
         assert log_row[1] == "polarization"
+
+
+def test_dag_channel_loading_from_config(tmp_path):
+    from services.telegram_scraper.airflow_examples.telegram_cleaning_dag import load_channels_from_config
+    import yaml
+
+    # Test 1: Modern nested categories format
+    config_data = {
+        "scraping": {
+            "categories": {
+                "polarization": {
+                    "channels": ["shweba000", "kyawswar49111", "@SittKhwayDead"]
+                },
+                "news": {
+                    "channels": ["@khitthitnews", "theirrawaddy"]
+                },
+            }
+        }
+    }
+    cfg_file = tmp_path / "test_config.yaml"
+    with open(cfg_file, "w", encoding="utf-8") as f:
+        yaml.dump(config_data, f)
+
+    polar_chs, news_chs = load_channels_from_config(cfg_file)
+    assert polar_chs == ["shweba000", "kyawswar49111", "@SittKhwayDead"]
+    assert news_chs == ["@khitthitnews", "theirrawaddy"]
+
+    # Test 2: Legacy scraping.channels mapping
+    legacy_cfg = {
+        "scraping": {
+            "channels": {
+                "polarization": ["ch_polar_1"],
+                "news": ["ch_news_1", "ch_news_2"],
+            }
+        }
+    }
+    legacy_file = tmp_path / "legacy_config.yaml"
+    with open(legacy_file, "w", encoding="utf-8") as f:
+        yaml.dump(legacy_cfg, f)
+
+    polar_chs_l, news_chs_l = load_channels_from_config(legacy_file)
+    assert polar_chs_l == ["ch_polar_1"]
+    assert news_chs_l == ["ch_news_1", "ch_news_2"]
+
+    # Test 3: Missing file returns empty lists gracefully
+    missing_polar, missing_news = load_channels_from_config(tmp_path / "non_existent.yaml")
+    assert missing_polar == []
+    assert missing_news == []
+
+
+def test_news_extra_info_single_row_per_raw_text(tmp_path):
+    """
+    Verify that when duplicate raw texts exist (e.g. repeated posts, album media groups),
+    clean_tele_extra_info receives exactly 1 row while sentences are properly split into clean_tele_text.
+    """
+    db_file = str(tmp_path / "test_unique_extra.db")
+    engine = create_engine(f"sqlite:///{db_file}")
+    ScraperBase.metadata.create_all(engine)
+    AnnotationBase.metadata.create_all(engine)
+
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    # Raw news post containing 3 lines text (Headline + Dateline + 1 body sentence)
+    news_text = (
+        "သတင်းခေါင်းစဉ်ဖြစ်ပါသည်။\n"
+        "ရန်ကုန်၊ ၂၀၂၆ ခုနှစ်၊ စက်တင်ဘာ ၂၀ ရက်\n"
+        "ပြည်သူ့ကာကွယ်ရေးတပ်ဖွဲ့က စစ်ဆင်ရေး ဖော်ဆောင်ခဲ့ကြောင်း သိရသည်။"
+    )
+
+    day_start = datetime(2026, 9, 20, 0, 0, 0, tzinfo=timezone.utc)
+    day_end = datetime(2026, 9, 20, 23, 59, 59, tzinfo=timezone.utc)
+
+    # Insert 3 TelegramMessage rows with identical raw text (e.g. album or reposts)
+    for m_id in [101, 102, 103]:
+        session.add(TelegramMessage(
+            channel_name="khitthitnews",
+            category="news",
+            message_id=m_id,
+            message_text=news_text,
+            date=datetime(2026, 9, 20, 10, 0, 0, tzinfo=timezone.utc),
+            status="pending",
+        ))
+    session.commit()
+
+    stage_dir = str(tmp_path / "staging")
+    stats = _process_channel_day(
+        session=session,
+        channel_name="khitthitnews",
+        run_date="2026-09-20",
+        day_start=day_start,
+        day_end=day_end,
+        bigrams=None,
+        dry_run=False,
+        force=False,
+        category="news",
+        stage_dir=stage_dir,
+    )
+
+    assert stats["msgs_processed"] == 1
+    assert stats["msgs_skipped"] == 2  # The 2 duplicate raw texts are skipped!
+
+    # Check staging JSONL files
+    extra_file = Path(stage_dir) / "news" / "khitthitnews_2026-09-20_clean_tele_extra_info.jsonl"
+    text_file = Path(stage_dir) / "news" / "khitthitnews_2026-09-20_clean_tele_text.jsonl"
+
+    assert extra_file.exists()
+    assert text_file.exists()
+
+    with open(extra_file, "r", encoding="utf-8") as f:
+        extra_lines = [l for l in f if l.strip()]
+    assert len(extra_lines) == 1  # Exactly ONE line for the raw text!
+
+    with open(text_file, "r", encoding="utf-8") as f:
+        text_lines = [l for l in f if l.strip()]
+    assert len(text_lines) == 2  # Line 0 (headline) + Line 1 (body sentence)
+
+    # Ingest staged data into database
+    cfg = {"postgresql": {"url": f"sqlite:///{db_file}"}}
+    res = upload_staged_data(cfg, stage_dir=stage_dir, category="news")
+    assert res["uploaded_extras"] == 1
+    assert res["uploaded_texts"] == 2
+
+    # Verify database contents
+    extras_in_db = session.query(CleanTeleExtraInfo).all()
+    assert len(extras_in_db) == 1
+    assert extras_in_db[0].headline == "သတင်းခေါင်းစဉ်ဖြစ်ပါသည်။"
+    assert extras_in_db[0].message_id == 101
+
+    session.close()
+
+
+def test_extra_info_staging_and_upload_deduplication(tmp_path):
+    """
+    Verify that duplicate records in staging files or repeated upload calls
+    do not create duplicate clean_tele_extra_info rows in the database.
+    """
+    stage_dir = str(tmp_path / "staging_dup")
+    db_file = str(tmp_path / "test_dup.db")
+    engine = create_engine(f"sqlite:///{db_file}")
+    AnnotationBase.metadata.create_all(engine)
+
+    extra_rows = [
+        {
+            "channel_name": "khitthitnews",
+            "category": "news",
+            "message_id": 501,
+            "headline": "သတင်းခေါင်းစဉ် ၅၀၁",
+            "clean_info_date": "2026-09-24",
+            "original_short_note": "ရန်ကုန်",
+            "url_lists": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+        # Duplicate record with same message_id
+        {
+            "channel_name": "khitthitnews",
+            "category": "news",
+            "message_id": 501,
+            "headline": "သတင်းခေါင်းစဉ် ၅၀၁",
+            "clean_info_date": "2026-09-24",
+            "original_short_note": "ရန်ကုန်",
+            "url_lists": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    ]
+
+    # Staging writes unique rows
+    stage_channel_records(
+        stage_dir=stage_dir,
+        category="news",
+        channel_name="khitthitnews",
+        run_date="2026-09-24",
+        text_rows=[],
+        extra_rows=extra_rows,
+        error_rows=[],
+    )
+
+    extra_file = Path(stage_dir) / "news" / "khitthitnews_2026-09-24_clean_tele_extra_info.jsonl"
+    with open(extra_file, "r", encoding="utf-8") as f:
+        lines = [l for l in f if l.strip()]
+    assert len(lines) == 1
+
+    # First upload
+    cfg = {"postgresql": {"url": f"sqlite:///{db_file}"}}
+    res1 = upload_staged_data(cfg, stage_dir=stage_dir, category="news")
+    assert res1["uploaded_extras"] == 1
+
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    assert session.query(CleanTeleExtraInfo).count() == 1
+
+    # Re-stage and upload again
+    stage_channel_records(
+        stage_dir=stage_dir,
+        category="news",
+        channel_name="khitthitnews",
+        run_date="2026-09-24",
+        text_rows=[],
+        extra_rows=extra_rows,
+        error_rows=[],
+    )
+    res2 = upload_staged_data(cfg, stage_dir=stage_dir, category="news")
+    assert res2["uploaded_extras"] == 0  # Deduplicated against DB!
+    assert session.query(CleanTeleExtraInfo).count() == 1  # Still exactly 1 row!
+
+    session.close()
+
+
