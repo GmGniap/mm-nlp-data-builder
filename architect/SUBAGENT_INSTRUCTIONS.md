@@ -1,82 +1,93 @@
 # Sub-Agent Instructions & Operational Guidelines
 
-This document provides explicit instructions, responsibilities, and operational prompts for Agent 2 (Python Developer Agent) and Agent 3 (Full-Stack Developer Agent).
+This document provides explicit instructions, responsibilities, and operational guidelines for Agent 2 (Python & Data Engineer Agent) and Agent 3 (Full-Stack & Annotation Platform Agent).
 
 ---
 
-## Python Developer Agent (Telegram Scraper)
+## 📋 Prerequisites
+
+Before executing tasks, both agents must ensure:
+- Virtual environment is active: `source .venv/bin/activate`.
+- Database credentials use `<NEON_DATABASE_URL>`.
+- Sensitive API keys use environment variables: `<TELEGRAM_API_ID>`, `<TELEGRAM_API_HASH>`, `<TELEGRAM_STRING_SESSION>`.
+- Cold storage destination uses `<S3_ARCHIVE_BUCKET>`.
+- No real credentials, private IPs, or production bucket URLs are committed to source files.
+
+---
+
+## 🐍 Agent 2: Python & Data Engineering Agent (Scraper & NLP Cleaner)
 
 ### Primary Mission
-Build a robust, config-driven, automated Telegram channel message scraper that stores structured text messages in the shared SQLite database, and run a Myanmar sentence-cleaning pipeline that uploads split sentences to Neon PostgreSQL.
+Build, orchestrate, and maintain a robust, config-driven, rate-limited Telegram data acquisition pipeline, a decoupled Myanmar NLP sentence cleaning engine, and automated S3 Parquet archival.
 
-### Architecture — Two-Database Design
-| Database | Role | Who writes | Who reads |
+### Database Architecture
+All scraper, cleaner, and archival tables reside on **Neon PostgreSQL** within the environment schema (`public` for dev, `production` for prod):
+
+| Table | Role | Written By | Read By |
 |---|---|---|---|
-| **PostgreSQL** | Cleaned `CleanTeleText` sentence rows | `cleaner.py` | Flask annotation app |
+| `telegram_messages` | Raw scraped posts from Telegram | `scraper.py` | `cleaner.py`, `archival.py` |
+| `scraping_logs` | Scraper per-channel closed-day watermarks | `scraper.py` | `scraper.py`, Airflow |
+| `scraping_error_logs` | Scraper Dead Letter Queue (DLQ) | `scraper.py` | Monitoring, `--retry-dlq` |
+| `clean_tele_text` | Cleaned, sentence-split Myanmar lines | `cleaner.py` | Flask annotation app |
+| `clean_tele_extra_info` | News metadata (`headline`, `clean_info_date`, `original_short_note`, `url_lists`) | `cleaner.py` | Flask annotation app, NER pipelines |
+| `cleaning_logs` | Cleaner per-channel closed-day watermarks | `cleaner.py` | `cleaner.py`, Airflow |
+| `cleaning_error_logs` | Cleaner Dead Letter Queue (DLQ) | `cleaner.py` | Monitoring, `--retry-dlq` |
+| `archival_logs` | Cold storage Parquet audit trail | `archival.py` | Data Engineering |
 
 ### Workspace Scope
-`services/telegram_scraper/` and `.github/workflows/scrape_telegram.yml`
+`services/telegram_scraper/`, `shared/scraper_models.py`, `shared/annotation_models.py`, and `services/telegram_scraper/airflow_dags/`.
 
-### Checklist & Guidelines
-1. **Config-Driven Architecture**:
-   - Use `PyYAML` to read configuration parameters from `config.yaml` (fallback to `config.example.yaml`).
-   - Use environment variables (`TELEGRAM_API_ID`, `TELEGRAM_API_HASH`) for sensitive API credentials.
-   - Store the Neon PostgreSQL connection string as `NEON_DATABASE_URL` env var (or `.env` file); also document it under the `postgresql.url` config key.
-2. **Scraper Implementation (`scraper.py`)**:
-   - Use `telethon` or `pyrogram` for fetching channel posts asynchronously.
-   - Implement deduplication using unique constraint on `(channel_name, message_id)`.
-   - Record scraping metadata (timestamp, channel name, text, media links if any).
-3. **Database Integration (`storage.py`)**:
-   - Save extracted messages directly into the `TelegramMessage` database model defined in `shared/models.py`.
-   - Set default status to `"pending"`.
-4. **Cleaning Pipeline (`cleaner.py`)**:
-   - After scraping, run `cleaner.py` to split each `TelegramMessage.message_text` into individual Myanmar sentences using the built-in bigram splitter (ported from `my-linebreak.pl` by Dr.Ye Kyaw Thu).
-   - Upload resulting `CleanTeleText` rows (one per sentence) to Neon PostgreSQL.
-   - Support `--dry-run` (print splits without writing) and `--force` (re-process already-cleaned messages).
-   - Support an optional custom bigram dict file via `--dict PATH` or `cleaner.dict_path` in config.
-5. **Automation Setup**:
-   - Ensure `cron_job.sh` is executable (`chmod +x cron_job.sh`) and contains environment activation logic.
-   - Verify `.github/workflows/scrape_telegram.yml` defines secret environment variable mapping for GitHub Actions.
-6. **Testing**:
-   - Implement dry-run mode (`python scraper.py --dry-run`) to test fetching without committing to database.
-   - Implement dry-run mode (`python cleaner.py --dry-run`) to verify sentence splitting without PostgreSQL writes.
+### Core Directives & Checklist
+
+1. **Config-Driven Scraper Concurrency (`scraper.py`)**:
+   - Parse `config.yaml` to read category channel lists (`polarization`, `news`).
+   - Use `asyncio.Semaphore(5)` for channel extraction concurrency over Telethon `StringSession`.
+   - Throttle inter-channel requests with a minimum 60-second delay.
+   - Enforce closed-day processing (`--yesterday`) querying $T-1$ (`00:00:00` to `23:59:59` UTC).
+   - Log unrecoverable channel failures to `scraping_error_logs`.
+   - Support `--retry-dlq` to re-process failed channels.
+
+2. **Decoupled Sentence Cleaner & Staging (`cleaner.py`)**:
+   - **News Transformation:** Extract Line 1 as `headline` (dual storage in `clean_tele_extra_info` and `clean_tele_text` with `line_index = 0`), normalize Line 2 into strict `YYYY-MM-DD` date (`clean_info_date`) and store raw text in `original_short_note`, extract web URLs into `url_lists`.
+   - **Polarization Transformation:** Intra-channel daily deduplication (SHA-256), emoji and noise stripping, English-only sentence detection, short sentence filter (< 8 syllables), and unmonitored channel discovery (`[DISCOVERY]` logging).
+   - **Staging Mode (`--stage-dir`):** Stage channel records into `data/clean_staging/<category>/...jsonl` without persistent PostgreSQL write locks.
+   - **Barrier Bulk Ingestion (`--upload-staged`):** Ingest staged files in a single transaction via `bulk_insert_mappings` (1,000 items/batch).
+   - **Cascade Safety:** On `--force` re-cleaning, exclude rows already present in `annotation_results` from deletion.
+
+3. **Cold Storage Archival & Safe Purge (`archival.py`)**:
+   - Extract records older than 30 days (excluding recent 2 days).
+   - Convert to PyArrow tables and stream compressed Parquet to AWS S3 (`s3://<S3_ARCHIVE_BUCKET>/...`).
+   - Validate row counts between S3 and database before executing transactional deletion.
+   - Never delete `clean_tele_text` rows that have active human annotations in `annotation_results`.
+
+4. **Airflow Orchestration**:
+   - Maintain separate scheduled DAGs: `telegram_scraper_polarization_dag.py` (`00:00 UTC`), `telegram_scraper_news_dag.py` (`06:00 UTC`), `telegram_cleaning_dag.py` (`08:00 UTC`), and `telegram_archival_dag.py` (monthly).
 
 ---
 
-## Full-Stack Developer Agent (NLP Annotation Platform)
+## 🎨 Agent 3: Full-Stack Developer Agent (Annotation Platform & Microservices)
 
 ### Primary Mission
-Build an intuitive, responsive Flask web application for annotators to review individual **cleaned sentence lines** from Telegram messages, apply NLP tags, and export structured datasets.
-
-### Data Flow (Important)
-Raw Telegram messages are stored in `TelegramMessage`. A separate cleaning pipeline splits each message into individual sentences and stores them in `CleanTeleText` (one row per sentence). **The annotation interface must operate on `CleanTeleText` rows**, not raw `TelegramMessage` blobs. The `CleanTeleText.telegram_message_id` foreign key links each sentence back to its source message.
+Build, enhance, and maintain an intuitive, high-performance Flask web platform for annotators to review cleaned sentence lines, perform NER / polarization / severity tagging, export research datasets, and record browser speech audio.
 
 ### Workspace Scope
-`services/nlp_annotation_app/`
+`services/nlp_annotation_app/`, `services/recording_app/`, and `services/` (Gateway / Core App).
 
-### Checklist & Guidelines
-1. **Flask Application Architecture (`app.py`)**:
-   - Maintain modular blueprints or routing structure for Auth, Dashboard, and Annotation.
-   - Support `Flask-Login` authentication flow (register, login, logout, password hashing).
-2. **Database Models (`shared/annotation_models.py`)**:
-   - Import and use `User`, `CleanTeleText`, `CleaningLog`, `AnnotationResult`, and `SkippedRecord` from `shared.annotation_models`.
-   - The annotation app uses Neon PostgreSQL directly via `NEON_DATABASE_URL`.
-3. **Annotation Data Source — `CleanTeleText`**:
-   - All annotation-facing API routes (`/api/state`, `/api/submit`, `/api/skip`, `/api/save`, `/api/config`) must query `CleanTeleText` for the list of items to annotate.
-   - `AnnotationResult` stores submitted annotations as a flexible JSON blob (`payload_json`) per user, per sentence (`clean_line_id`), and per annotation type.
-   - `SkippedRecord` tracks skipped sentences per user and per annotation type.
-   - `CleanTeleText` contains denormalized columns (`channel_name`, `source_message_id`) to build Telegram deep-links without needing to query the scraper's database.
-   - **Last State Management**: `/api/state` should support `index=-1` (as default) to dynamically query the database for the first `CleanTeleText` row not present in `AnnotationResult` or `SkippedRecord` for the current user. This enables independent progress tracking across multiple users.
-4. **Dashboard (`dashboard.html`)**:
-   - Statistics should reflect `CleanTeleText` row counts (total sentences, pending, annotated, skipped).
-   - Display the latest `CleaningLog` watermark timestamp to show when the database was last updated by the scraper pipeline.
-5. **Web User Interface (`templates/`)**:
-   - Use modern styling (Tailwind CSS via CDN) in `base.html`.
-   - Build `dashboard.html` to visualize queue statistics.
-   - Build `annotate.html` (Arloo UI) offering interactive text selection, binary task toggle buttons, and dynamic field configuration via `annotation_config.yaml`.
-   - The UI defaults `IDX` to `-1` to trigger the backend's dynamic resume logic on load.
-6. **API & Data Export**:
-   - Implement `/api/submit` and `/api/skip` POST routes to submit/skip annotations and update `AnnotationResult` / `SkippedRecord` tables.
-   - Implement `/api/save` GET route allowing users to download labeled datasets as JSON / CSV / TSV.
-7. **Testing**:
-   - Test application startup locally on port 5000 (`python app.py`).
+### Core Directives & Checklist
+
+1. **Flask Application Architecture**:
+   - Use application factory pattern (`create_app`) with `ProxyFix` middleware.
+   - Maintain modular blueprints for Authentication, Dashboard, Annotation Feature, and Recording Service.
+   - Connect directly to Neon PostgreSQL using `<NEON_DATABASE_URL>`.
+
+2. **Annotation Interface Data Flow**:
+   - Annotators label sentences from `clean_tele_text`.
+   - Support category filtering (e.g. `news` vs `polarization`).
+   - Query `clean_tele_extra_info` by `(channel_name, message_id)` to display context headlines, standardized dates, and reference URLs.
+   - Store annotations in `AnnotationResult` (payload JSON) and skips in `SkippedRecord`.
+   - Maintain dynamic resume navigation (`index = -1`) loading the first unannotated record for the active user.
+
+3. **Speech Recording Microservice (`services/recording_app/`)**:
+   - Stream PCM audio chunks from browser `AudioWorklet` to disk-backed bounded temporary buffers.
+   - Atomically finalize WAV audio and JSON metadata.
+   - Support standalone access or navigation from the main platform.

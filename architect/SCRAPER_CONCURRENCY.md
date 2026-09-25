@@ -11,6 +11,12 @@ This document provides complete architectural specifications, operational constr
 * **Storage Layer:** Neon PostgreSQL (Free Tier) for live/active transactional data.
 * **Cold Storage / Data Lake:** AWS S3 storing compressed Apache Parquet files.
 
+### Prerequisites
+- Active Python virtual environment (`source .venv/bin/activate`).
+- Telegram developer API credentials (`<TELEGRAM_API_ID>`, `<TELEGRAM_API_HASH>`).
+- Database URI placeholder (`<NEON_DATABASE_URL>`).
+- AWS S3 bucket destination (`<S3_ARCHIVE_BUCKET>`).
+
 ---
 
 ## 2. Infrastructure Constraints & Rate Limits
@@ -163,11 +169,11 @@ The `config.yaml` file is structured to support category-based batches, rate lim
 environment: dev  # 'dev' (uses 'public' schema) or 'prod' (uses 'production' schema)
 
 telegram:
-  api_id: "36219741478920"
-  api_hash: "cffff71bdeddd35887e6766992b7773582fa8d0ef4"
+  api_id: "<TELEGRAM_API_ID>"
+  api_hash: "<TELEGRAM_API_HASH>"
   session_name: "telegram_session"
   # StringSession is preferred in production to allow worker mobility
-  string_session: ""
+  string_session: "<TELEGRAM_STRING_SESSION>"
 
 scraping:
   max_parallel_channels: 5
@@ -181,11 +187,11 @@ scraping:
     polarization:
       schedule_cron: "0 0 * * *"       # Runs at 00:00 UTC
       channels:
-        - "@channel_name"
+        - "sample_polarization_channel"
     news:
       schedule_cron: "0 6 * * *"       # Runs at 06:00 UTC (6h offset)
       channels:
-        - "@channel_name"
+        - "sample_news_channel"
 
 # Archival to AWS S3 & Data Retention
 archival:
@@ -194,38 +200,38 @@ archival:
   batch_chunk_size: 5000
   compression: "snappy"
   s3:
-    bucket_name: "myanmar-nlp-data-archive"
+    bucket_name: "<S3_ARCHIVE_BUCKET>"
     region: "ap-southeast-1"
 
 # Database Connection (Neon PostgreSQL)
 postgresql:
-  url: "postgresql://neondb_owner:password@ep-host.aws.neon.tech/neondb?sslmode=require"
+  url: "postgresql://<DB_USER>:<DB_PASSWORD>@<DB_HOST>/<DB_NAME>?sslmode=require"
 ```
 
 ---
 
 ## 7. Implementation Checklist for AI Agent
 
-- [ ] **1. Dependencies & Models:**
+- [x] **1. Dependencies & Models:**
   - Add `pyarrow>=14.0.0` and `boto3>=1.34.0` to `pyproject.toml` and `services/telegram_scraper/requirements.txt`.
   - Add SQLAlchemy models `ScrapingErrorLog` and `ArchivalLog` into `shared/scraper_models.py` and `init_scraper_db`.
-- [ ] **2. Core Scraper Updates (`scraper.py` & `storage.py`):**
+- [x] **2. Core Scraper Updates (`scraper.py` & `storage.py`):**
   - Update `load_config()` to handle category-based structures and limits.
   - Implement `asyncio.Semaphore(max_parallel_channels)` in `scraper.py` for concurrent channel extraction.
   - Add inter-channel rate limiting delay (`inter_channel_delay_seconds`).
   - Add chunked flushing every `db_upload_chunk_size` messages.
   - Add DLQ helper `log_scraping_error(...)` in `storage.py` writing to `scraping_error_logs`.
-- [ ] **3. Airflow DAGs (`airflow_examples/` or dedicated DAG folder):**
+- [x] **3. Airflow DAGs (`airflow_examples/` or dedicated DAG folder):**
   - Create category-specific DAG generator or distinct DAGs (`telegram_scraper_polarization_dag.py`, `telegram_scraper_news_dag.py`).
   - Configure task retries (`retries=2, retry_delay=timedelta(minutes=10)`).
   - Implement `telegram_archival_dag.py` running on a monthly schedule.
-- [ ] **4. Archival Module (`services/telegram_scraper/archival.py`):**
+- [x] **4. Archival Module (`services/telegram_scraper/archival.py`):**
   - Implement query for messages older than 30 days (excluding last 2 days).
   - Implement PyArrow conversion and Parquet streaming to AWS S3.
   - Implement verification step comparing S3 row counts to DB row counts.
   - Implement safe DB deletion (with foreign key protection on `clean_tele_text`).
   - Write run details to `archival_logs`.
-- [ ] **5. Unit & Integration Tests:**
+- [x] **5. Unit & Integration Tests:**
   - Mock S3 upload with `moto` or mock client to test Parquet generation and row-count verification.
   - Test `clean_tele_text` deletion logic to verify annotated rows are never deleted.
   - Test `asyncio.Semaphore` channel batching under mocked Telethon responses.
