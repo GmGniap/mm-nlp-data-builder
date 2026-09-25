@@ -22,10 +22,12 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from shared.annotation_models import (
-    CleanTeleText    as _SharedCleanTeleText,
-    CleaningLog      as _SharedCleaningLog,
-    AnnotationResult as _SharedAnnotationResult,
-    SkippedRecord    as _SharedSkippedRecord,
+    CleanTeleText      as _SharedCleanTeleText,
+    CleanTeleExtraInfo as _SharedCleanTeleExtraInfo,
+    CleaningLog        as _SharedCleaningLog,
+    CleaningErrorLog   as _SharedCleaningErrorLog,
+    AnnotationResult   as _SharedAnnotationResult,
+    SkippedRecord      as _SharedSkippedRecord,
 )
 from services.extensions import db
 from services.models import User, _col
@@ -35,7 +37,9 @@ __all__ = [
     "db",
     "User",
     "CleanTeleText",
+    "CleanTeleExtraInfo",
     "CleaningLog",
+    "CleaningErrorLog",
     "AnnotationResult",
     "SkippedRecord",
 ]
@@ -53,6 +57,7 @@ class CleanTeleText(db.Model):
     line_index          = _col(_SharedCleanTeleText, "line_index")
     sentence            = _col(_SharedCleanTeleText, "sentence")
     channel_name        = _col(_SharedCleanTeleText, "channel_name")
+    category            = _col(_SharedCleanTeleText, "category")
     source_message_id   = _col(_SharedCleanTeleText, "source_message_id")
     created_at          = _col(_SharedCleanTeleText, "created_at")
 
@@ -67,6 +72,27 @@ class CleanTeleText(db.Model):
         return f"<CleanTeleText msg:{self.telegram_message_id} line:{self.line_index}>"
 
 
+class CleanTeleExtraInfo(db.Model):
+    """
+    News metadata: headline, clean_info_date, original_short_note, external URLs.
+    Column spec mirrors shared.annotation_models.CleanTeleExtraInfo.
+    """
+    __tablename__ = "clean_tele_extra_info"
+
+    id                  = _col(_SharedCleanTeleExtraInfo, "id")
+    channel_name        = _col(_SharedCleanTeleExtraInfo, "channel_name")
+    category            = _col(_SharedCleanTeleExtraInfo, "category")
+    message_id          = _col(_SharedCleanTeleExtraInfo, "message_id")
+    headline            = _col(_SharedCleanTeleExtraInfo, "headline")
+    clean_info_date     = _col(_SharedCleanTeleExtraInfo, "clean_info_date")
+    original_short_note = _col(_SharedCleanTeleExtraInfo, "original_short_note")
+    url_lists           = _col(_SharedCleanTeleExtraInfo, "url_lists")
+    created_at          = _col(_SharedCleanTeleExtraInfo, "created_at")
+
+    def __repr__(self) -> str:
+        return f"<CleanTeleExtraInfo ch:{self.channel_name} msg:{self.message_id}>"
+
+
 class CleaningLog(db.Model):
     """
     Cleaner pipeline watermark — read-only from the Flask app's perspective.
@@ -76,6 +102,7 @@ class CleaningLog(db.Model):
 
     id                  = _col(_SharedCleaningLog, "id")
     channel_name        = _col(_SharedCleaningLog, "channel_name")
+    category            = _col(_SharedCleaningLog, "category")
     run_date            = _col(_SharedCleaningLog, "run_date")
     status              = _col(_SharedCleaningLog, "status")
     messages_processed  = _col(_SharedCleaningLog, "messages_processed")
@@ -90,6 +117,32 @@ class CleaningLog(db.Model):
             f"<CleaningLog {self.channel_name}:{self.run_date} status={self.status} "
             f"msgs={self.messages_processed} sents={self.sentences_generated}>"
         )
+
+
+class CleaningErrorLog(db.Model):
+    """
+    Cleaner DLQ records.
+    Column spec mirrors shared.annotation_models.CleaningErrorLog.
+    """
+    __tablename__ = "cleaning_error_logs"
+
+    id                  = _col(_SharedCleaningErrorLog, "id")
+    channel_name        = _col(_SharedCleaningErrorLog, "channel_name")
+    category            = _col(_SharedCleaningErrorLog, "category")
+    run_date            = _col(_SharedCleaningErrorLog, "run_date")
+    telegram_message_id = _col(_SharedCleaningErrorLog, "telegram_message_id")
+    source_message_id   = _col(_SharedCleaningErrorLog, "source_message_id")
+    raw_text            = _col(_SharedCleaningErrorLog, "raw_text")
+    error_type          = _col(_SharedCleaningErrorLog, "error_type")
+    error_message       = _col(_SharedCleaningErrorLog, "error_message")
+    stack_trace         = _col(_SharedCleaningErrorLog, "stack_trace")
+    retry_count         = _col(_SharedCleaningErrorLog, "retry_count")
+    resolved            = _col(_SharedCleaningErrorLog, "resolved")
+    created_at          = _col(_SharedCleaningErrorLog, "created_at")
+    resolved_at         = _col(_SharedCleaningErrorLog, "resolved_at")
+
+    def __repr__(self) -> str:
+        return f"<CleaningErrorLog ch:{self.channel_name}:{self.run_date} err:{self.error_type}>"
 
 
 class AnnotationResult(db.Model):

@@ -4,47 +4,50 @@ cleaner.py — Myanmar Sentence Cleaner & Annotation DB Uploader
 Pipeline:
   1. Read TelegramMessage rows from Neon PostgreSQL (scraper DB) for a given
      channel and day window (filtered by TelegramMessage.channel_name and date).
-  2. Split each message's text into individual Myanmar sentences using a
-     regex-based algorithm ported from Dr. Ye Kyaw Thu's my-linebreak.pl
-     (https://github.com/ye-kyaw-thu/tools/blob/master/perl/my-linebreak.pl).
-  3. Write CleanTeleText rows to Neon PostgreSQL (annotation tables).
-     Both read and write use the same Neon PostgreSQL connection string
-     (NEON_DATABASE_URL / config postgresql.url).
-  4. Record a CleaningLog watermark row per channel and calendar day so
-     subsequent runs are idempotent and can be backfilled for any date range.
+  2. Apply category-specific data transformations:
+     - News: Extract headline, dateline location/date short_note, external URLs,
+       and split body into clean Myanmar sentences. Headline is stored in both
+       clean_tele_extra_info and clean_tele_text (line_index=0).
+     - Polarization: In-memory same-channel same-day deduplication, channel
+       discovery logging ([DISCOVERY]), emoji/noise stripping, English-only
+       sentence drop, and < 8 syllable/word filter.
+  3. Write CleanTeleText, CleanTeleExtraInfo, and CleaningLog rows to Neon PostgreSQL.
+  4. Provide file-based staging (--stage-dir) and category bulk upload (--upload-staged)
+     to avoid Neon DB connection and compute saturation under Airflow dynamic task mapping.
+  5. Isolate message-level errors into Dead Letter Queue (CleaningErrorLog) and provide
+     manual replay (--retry-dlq).
 
-Imports
--------
-  shared.scraper_models    → TelegramMessage  (read source)
-  shared.annotation_models → CleanTeleText, CleaningLog  (write destination)
-
-Usage
+Usage:
 -----
     # Default incremental: cleans all channels after their latest watermark date
     uv run python services/telegram_scraper/cleaner.py
 
-    # Clean a single channel incrementally
-    uv run python services/telegram_scraper/cleaner.py --channel shweba000
+    # Clean a single channel for yesterday (Airflow daily batch)
+    uv run python services/telegram_scraper/cleaner.py --channel shweba000 --category polarization --yesterday
 
-    # Dry-run preview
-    uv run python services/telegram_scraper/cleaner.py --dry-run
+    # Stage to local files (avoids direct DB insert spikes in Airflow)
+    uv run python services/telegram_scraper/cleaner.py --category news --channel khitthitnews --yesterday --stage-dir data/clean_staging
 
-    # Backfill a specific date range (re-runs even if already completed)
-    uv run python services/telegram_scraper/cleaner.py --from-date 2025-08-01 --to-date 2025-08-07 --force
+    # Category barrier bulk upload from staging files
+    uv run python services/telegram_scraper/cleaner.py --category news --upload-staged --stage-dir data/clean_staging
 
-    # Use a custom bigram dictionary
-    uv run python services/telegram_scraper/cleaner.py --dict ref/1syl.potma.dict
+    # Replay failed messages from DLQ table
+    uv run python services/telegram_scraper/cleaner.py --retry-dlq --category polarization
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import logging
 import os
 import re
 import sys
-import logging
+import traceback
 import unicodedata
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Generator
 
 import yaml
@@ -59,13 +62,21 @@ sys.path.insert(0, PROJECT_ROOT)
 # Scraper models — read TelegramMessage rows
 from shared.scraper_models import TelegramMessage
 
-# Annotation models — write CleanTeleText, CleaningLog rows
-from shared.annotation_models import CleanTeleText, CleaningLog, init_annotation_db
+# Annotation models — write CleanTeleText, CleanTeleExtraInfo, CleaningLog, CleaningErrorLog rows
+from shared.annotation_models import (
+    AnnotationBase,
+    CleanTeleText,
+    CleanTeleExtraInfo,
+    CleaningLog,
+    CleaningErrorLog,
+    AnnotationResult,
+    init_annotation_db,
+)
 
 load_dotenv()
 
 logging.basicConfig(
-    filename='output.log',
+    filename="output.log",
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -74,10 +85,123 @@ log = logging.getLogger(__name__)
 
 
 # ===========================================================================
+# Dictionaries & Mappings for Myanmar Normalization
+# ===========================================================================
+
+MYANMAR_DIGITS_MAP: dict[str, str] = {
+    "၀": "0", "၁": "1", "၂": "2", "၃": "3", "၄": "4",
+    "၅": "5", "၆": "6", "၇": "7", "၈": "8", "၉": "9",
+}
+
+MYANMAR_TO_ENG_MONTHS: dict[str, str] = {
+    "ဇန်နဝါရီ": "January",
+    "ဖေဖော်ဝါရီ": "February",
+    "မတ်": "March",
+    "ဧပြီ": "April",
+    "မေ": "May",
+    "ဇွန်": "June",
+    "ဇူလိုင်": "July",
+    "သြဂုတ်": "August",
+    "ဩဂုတ်": "August",
+    "စက်တင်ဘာ": "September",
+    "အောက်တိုဘာ": "October",
+    "နိုဝင်ဘာ": "November",
+    "ဒီဇင်ဘာ": "December",
+}
+
+ENG_MONTH_TO_NUM: dict[str, int] = {
+    "January": 1, "February": 2, "March": 3, "April": 4,
+    "May": 5, "June": 6, "July": 7, "August": 8,
+    "September": 9, "October": 10, "November": 11, "December": 12,
+}
+
+
+def normalize_myanmar_digits(text_str: str) -> str:
+    """Convert Myanmar digits (၀-၉) to Western digits (0-9)."""
+    return "".join(MYANMAR_DIGITS_MAP.get(ch, ch) for ch in text_str)
+
+
+def standardize_news_date(date_raw: str, run_date: str = "") -> str | None:
+    """
+    Standardize a Myanmar date string (e.g. 'စက်တင်ဘာ ၂၀ ရက်' or '၂၀၂၃ ခုနှစ်၊ စက်တင်ဘာ ၂၀')
+    into a standardized 'YYYY-MM-DD' date string.
+    Year is resolved from date_raw, run_date, or scraping time (current year).
+    """
+    if not date_raw or not date_raw.strip():
+        return None
+
+    norm = normalize_myanmar_digits(date_raw.strip())
+
+    # Check if already in standard ISO format YYYY-MM-DD
+    iso_match = re.search(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b", norm)
+    if iso_match:
+        try:
+            y, m, d = int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3))
+            return datetime(y, m, d).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    # Check DD-MM-YYYY or DD/MM/YYYY
+    dmy_match = re.search(r"\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b", norm)
+    if dmy_match:
+        try:
+            d, m, y = int(dmy_match.group(1)), int(dmy_match.group(2)), int(dmy_match.group(3))
+            return datetime(y, m, d).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    matched_month: str | None = None
+    month_num: int | None = None
+    for mm_month, eng_month in MYANMAR_TO_ENG_MONTHS.items():
+        if mm_month in date_raw:
+            matched_month = eng_month
+            month_num = ENG_MONTH_TO_NUM[eng_month]
+            norm = norm.replace(mm_month, eng_month)
+            break
+
+    # Strip Myanmar date suffixes/particles
+    norm = re.sub(r"\s*ရက်\b", "", norm)
+    norm = re.sub(r"\s*ခုနှစ်\b", "", norm)
+
+    # 1. Resolve 4-digit year: from text, run_date, or current scraping year
+    year: int | None = None
+    year_match = re.search(r"\b(19\d\d|20\d\d)\b", norm)
+    if year_match:
+        year = int(year_match.group(1))
+    elif run_date:
+        run_year_match = re.match(r"^(\d{4})", run_date.strip())
+        if run_year_match:
+            year = int(run_year_match.group(1))
+
+    if year is None:
+        # Fall back to current year (scraping time assumption)
+        year = datetime.now(timezone.utc).year
+
+    # 2. Resolve day (1-31)
+    day: int | None = None
+    temp_norm = re.sub(r"\b(19\d\d|20\d\d)\b", "", norm) if year_match else norm
+    day_match = re.search(r"\b([0-3]?[0-9])\b", temp_norm)
+    if day_match:
+        d = int(day_match.group(1))
+        if 1 <= d <= 31:
+            day = d
+
+    # 3. Format strictly to YYYY-MM-DD
+    if year and month_num and day:
+        try:
+            dt = datetime(year, month_num, day)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+
+    return None
+
+
+# ===========================================================================
 # Config loader & Environment Helper
 # ===========================================================================
 
-def load_config(config_file: str = None) -> dict:
+def load_config(config_file: str | None = None) -> dict:
     if not config_file:
         config_file = os.getenv("CONFIG_PATH", "config.yaml")
     if os.path.isabs(config_file):
@@ -87,20 +211,43 @@ def load_config(config_file: str = None) -> dict:
     if not os.path.exists(target):
         target = os.path.join(BASE_DIR, "config.example.yaml")
     with open(target, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
 
 
-def resolve_environment_and_schema(config: dict, env_override: str = None) -> tuple[str, str]:
+def resolve_environment_and_schema(config: dict, env_override: str | None = None) -> tuple[str, str]:
     """
     Resolve environment ('dev' or 'prod') and corresponding PostgreSQL schema
     ('public' or 'production').
-    Precedence: env_override (CLI) > ENVIRONMENT env var > config['environment'] > 'dev'.
     """
     env = env_override or os.getenv("ENVIRONMENT") or config.get("environment", "dev")
     env = str(env).strip().lower()
     if env in ("prod", "production"):
         return "prod", "production"
     return "dev", "public"
+
+
+def get_known_channels(config: dict) -> set[str]:
+    """Collect all known channel handles from config.yaml as a normalized set."""
+    scraping_cfg = config.get("scraping", {})
+    categories = scraping_cfg.get("categories", {})
+    channels_cfg = scraping_cfg.get("channels", {})
+    known: set[str] = set()
+
+    if isinstance(categories, dict):
+        for _, cat_val in categories.items():
+            ch_list = cat_val.get("channels", []) if isinstance(cat_val, dict) else (
+                cat_val if isinstance(cat_val, list) else []
+            )
+            for ch in ch_list:
+                known.add(str(ch).lstrip("@").strip().lower())
+
+    if isinstance(channels_cfg, dict):
+        for _, ch_list in channels_cfg.items():
+            if isinstance(ch_list, list):
+                for ch in ch_list:
+                    known.add(str(ch).lstrip("@").strip().lower())
+
+    return known
 
 
 # ===========================================================================
@@ -136,16 +283,7 @@ def _load_dict_file(dict_path: str) -> list[str]:
 
 
 def is_valid_sentence(segment: str) -> bool:
-    """
-    Return True if *segment* qualifies as a real sentence.
-
-    A segment is rejected when every character is a non-letter, non-digit
-    Unicode character — i.e. the segment is composed entirely of symbols,
-    punctuation, separators, or ASCII decoration (e.g. "=====", "-----",
-    "*****", "▬▬▬").  At least one character must have a Unicode General
-    Category that starts with 'L' (letter) or 'N' (number) for the
-    segment to be accepted.
-    """
+    """Return True if segment contains at least one letter or digit."""
     return any(
         unicodedata.category(ch)[0] in {"L", "N"}
         for ch in segment
@@ -156,16 +294,7 @@ def split_myanmar_sentences(
     paragraph: str,
     bigrams: list[str] | None = None,
 ) -> list[str]:
-    r"""
-    Split a Myanmar paragraph into individual sentences.
-
-    Algorithm (my-linebreak.pl by Dr.Ye Kyaw Thu):
-      1. Process each line independently.
-      2. Strip leading/trailing whitespace.       → Perl: s/^\s+|\s+$//g
-      3. Collapse multiple spaces.                → Perl: s/ +/ /g
-      4. Insert \n after every matched bigram.   → Perl: s/($re)/$1\n/g
-      5. Split on newlines, discard empty.
-    """
+    """Split a Myanmar paragraph into individual sentences using Dr. Ye Kyaw Thu algorithm."""
     if not paragraph or not paragraph.strip():
         return []
 
@@ -188,11 +317,111 @@ def split_myanmar_sentences(
 
 
 # ===========================================================================
+# Advanced Category-Specific Transformation Engines
+# ===========================================================================
+
+def parse_news_message(raw_text: str, run_date: str = "") -> tuple[str | None, str | None, str | None, list[str], str]:
+    """
+    Parse a news post into:
+      - headline: Line 1 of the article.
+      - clean_info_date: Standardized date YYYY-MM-DD format (e.g. '2026-09-20'). Year can be extracted from scraping time while assuming the news is published within this year.
+      - original_short_note: Original Line 2 text (e.g. 'မကွေး၊ စက်တင်ဘာ ၂၀ ရက်').
+      - url_lists: List of external URLs extracted from message.
+      - body_text: Remaining text lines to be split into sentences.
+    """
+    if not raw_text or not raw_text.strip():
+        return None, None, None, [], ""
+
+    lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
+    if not lines:
+        return None, None, None, [], ""
+
+    headline = lines[0]
+    clean_info_date = None
+    original_short_note = None
+    body_start_idx = 1
+
+    # Extract all external URLs from raw_text
+    urls = re.findall(r"https?://[^\s]+", raw_text)
+    url_lists = list(dict.fromkeys(urls))
+
+    if len(lines) > 1:
+        line2 = lines[1]
+        dateline_match = re.search(r"^([^\n\r၊,]+)[၊,]\s*([^\n\r]+)", line2)
+        if dateline_match:
+            date_raw = dateline_match.group(2).strip()
+            clean_date = standardize_news_date(date_raw, run_date=run_date)
+            if clean_date:
+                clean_info_date = clean_date
+                original_short_note = line2
+                body_start_idx = 2
+        else:
+            # Check if line2 directly matches a date without location/comma
+            has_month = any(mm in line2 for mm in MYANMAR_TO_ENG_MONTHS)
+            if has_month:
+                clean_date = standardize_news_date(line2, run_date=run_date)
+                if clean_date:
+                    clean_info_date = clean_date
+                    original_short_note = line2
+                    body_start_idx = 2
+
+    body_text = "\n".join(lines[body_start_idx:])
+    return headline, clean_info_date, original_short_note, url_lists, body_text
+
+
+def extract_telegram_channels(text_str: str) -> list[str]:
+    """Find all Telegram channel handles mentioned via t.me/<channel> or @<channel>."""
+    handles: list[str] = []
+    for m in re.finditer(r"(?:https?://)?(?:t\.me|telegram\.me)/([a-zA-Z0-9_]{5,32})", text_str):
+        handles.append(m.group(1).lower())
+    for m in re.finditer(r"@([a-zA-Z0-9_]{5,32})", text_str):
+        handles.append(m.group(1).lower())
+    return list(dict.fromkeys(handles))
+
+
+def clean_polarization_sentence(sentence: str) -> str | None:
+    """
+    Clean conversational sentence in polarization category:
+      - Strip emojis and non-linguistic noise characters.
+      - Drop sentence if it contains no Myanmar Unicode script.
+      - Drop sentence if token count (syllables or words) < 8.
+    """
+    if not sentence or not sentence.strip():
+        return None
+
+    # 1. Must contain Myanmar Unicode characters
+    if not re.search(r"[\u1000-\u109F\uAA60-\uAA7F\uA9E0-\uA9FF]", sentence):
+        return None
+
+    # 2. Strip emojis, pictographs, and non-linguistic decorative symbols
+    cleaned = re.sub(
+        r"[\U00010000-\U0010ffff\u2600-\u27bf\ufe0f\u200d\u25a0-\u25ff\u2b00-\u2bff\u2300-\u23ff]",
+        "",
+        sentence,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    if not cleaned:
+        return None
+
+    # 3. Short sentence filter (< 8 syllables/words)
+    syllables = re.findall(
+        r"(?:(?<![်္])([က-အ]|[\u1000-\u1021\u1023-\u102A\u1040-\u1049])|[a-zA-Z0-9]+)",
+        cleaned,
+    )
+    words = cleaned.split()
+    token_count = max(len(syllables), len(words))
+    if token_count < 8:
+        return None
+
+    return cleaned
+
+
+# ===========================================================================
 # Date / window utilities
 # ===========================================================================
 
 def _to_date(value: str | date | None) -> date | None:
-    """Parse a YYYY-MM-DD string to a date object (passthrough if already date)."""
     if value is None:
         return None
     if isinstance(value, date):
@@ -204,16 +433,11 @@ def build_day_windows(
     from_date: date,
     to_date: date,
 ) -> list[tuple[str, datetime, datetime]]:
-    """
-    Return a list of (run_date_str, day_start_utc, day_end_utc) tuples
-    covering [from_date, to_date] inclusive, ordered chronologically.
-    """
     windows = []
     current = from_date
     while current <= to_date:
-        day_start = datetime(current.year, current.month, current.day,
-                             0, 0, 0, tzinfo=timezone.utc)
-        day_end   = day_start + timedelta(days=1) - timedelta(seconds=1)
+        day_start = datetime(current.year, current.month, current.day, 0, 0, 0, tzinfo=timezone.utc)
+        day_end = day_start + timedelta(days=1) - timedelta(seconds=1)
         windows.append((current.strftime("%Y-%m-%d"), day_start, day_end))
         current += timedelta(days=1)
     return windows
@@ -224,20 +448,18 @@ def build_day_windows(
 # ===========================================================================
 
 def get_pg_engine(pg_url: str, schema: str = "public"):
-    """Create engine for Neon PostgreSQL (used for both read and write) configured for target schema."""
+    """Create engine for Neon PostgreSQL configured for target schema."""
     engine = create_engine(pg_url, pool_pre_ping=True)
-    if schema and schema != "public":
-        with engine.connect() as conn:
-            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
-            conn.commit()
-    return engine.execution_options(schema_translate_map={None: schema})
+    if engine.dialect.name == "postgresql":
+        if schema and schema != "public":
+            with engine.connect() as conn:
+                conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+                conn.commit()
+        return engine.execution_options(schema_translate_map={None: schema})
+    return engine
 
 
 def get_latest_cleaned_date(session, channel_name: str) -> date | None:
-    """
-    Return the most recent run_date that has a 'completed' CleaningLog entry
-    for the given channel, or None if no cleaning has been done yet.
-    """
     result = (
         session.query(func.max(CleaningLog.run_date))
         .filter(
@@ -251,20 +473,19 @@ def get_latest_cleaned_date(session, channel_name: str) -> date | None:
     return datetime.strptime(result, "%Y-%m-%d").date()
 
 
-def start_cleaning_log(session, channel_name: str, run_date: str, force: bool = False) -> CleaningLog:
-    """
-    Insert a 'running' CleaningLog row for the given channel_name and run_date.
-    If force=True and a row already exists, it is deleted first.
-    """
+def start_cleaning_log(
+    session, channel_name: str, run_date: str, category: str | None = None, force: bool = False
+) -> CleaningLog:
     if force:
         session.query(CleaningLog).filter_by(channel_name=channel_name, run_date=run_date).delete()
         session.flush()
 
     entry = CleaningLog(
         channel_name=channel_name,
+        category=category,
         run_date=run_date,
         status="running",
-        cleaning_start_ts=datetime.now(datetime.UTC),
+        cleaning_start_ts=datetime.now(timezone.utc),
     )
     session.add(entry)
     session.flush()
@@ -279,17 +500,15 @@ def finish_cleaning_log(
     sentences_generated: int,
     status: str = "completed",
 ) -> None:
-    """Update a CleaningLog row with final stats and mark it completed/failed."""
-    entry.messages_processed  = messages_processed
-    entry.messages_skipped    = messages_skipped
+    entry.messages_processed = messages_processed
+    entry.messages_skipped = messages_skipped
     entry.sentences_generated = sentences_generated
-    entry.cleaning_end_ts     = datetime.now(datetime.UTC),
-    entry.status              = status
+    entry.cleaning_end_ts = datetime.now(timezone.utc)
+    entry.status = status
     session.flush()
 
 
 def channel_day_already_completed(session, channel_name: str, run_date: str) -> bool:
-    """Return True if a 'completed' CleaningLog row exists for (channel_name, run_date)."""
     return (
         session.query(CleaningLog)
         .filter_by(channel_name=channel_name, run_date=run_date, status="completed")
@@ -303,11 +522,6 @@ def iter_messages_for_channel_window(
     day_start: datetime,
     day_end: datetime,
 ) -> Generator[TelegramMessage, None, None]:
-    """
-    Yield TelegramMessage rows for a specific channel whose date falls within [day_start, day_end].
-    Messages with NULL dates are skipped (they have no calendar day).
-    Only messages with non-empty text are yielded.
-    """
     query = (
         session.query(TelegramMessage)
         .filter(
@@ -325,7 +539,50 @@ def iter_messages_for_channel_window(
 
 
 # ===========================================================================
-# Core pipeline
+# Staging File Helpers
+# ===========================================================================
+
+def stage_channel_records(
+    stage_dir: str,
+    category: str,
+    channel_name: str,
+    run_date: str,
+    text_rows: list[dict],
+    extra_rows: list[dict],
+    error_rows: list[dict],
+) -> dict:
+    """Write intermediate records to stage_dir/<category>/<channel>_<run_date>_*.jsonl files."""
+    cat_dir = os.path.join(stage_dir, category)
+    os.makedirs(cat_dir, exist_ok=True)
+    norm_ch = channel_name.lstrip("@").lower()
+
+    if text_rows:
+        text_file = os.path.join(cat_dir, f"{norm_ch}_{run_date}_clean_tele_text.jsonl")
+        with open(text_file, "a", encoding="utf-8") as f:
+            for r in text_rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    if extra_rows:
+        extra_file = os.path.join(cat_dir, f"{norm_ch}_{run_date}_clean_tele_extra_info.jsonl")
+        with open(extra_file, "a", encoding="utf-8") as f:
+            for r in extra_rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    if error_rows:
+        err_file = os.path.join(cat_dir, f"{norm_ch}_{run_date}_errors.jsonl")
+        with open(err_file, "a", encoding="utf-8") as f:
+            for r in error_rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    return {
+        "text_staged": len(text_rows),
+        "extra_staged": len(extra_rows),
+        "errors_staged": len(error_rows),
+    }
+
+
+# ===========================================================================
+# Core Processing Engine
 # ===========================================================================
 
 def _process_channel_day(
@@ -337,28 +594,35 @@ def _process_channel_day(
     bigrams: list[str] | None,
     dry_run: bool,
     force: bool,
+    category: str | None = None,
+    stage_dir: str | None = None,
+    known_channels: set[str] | None = None,
 ) -> dict:
     """
     Clean all TelegramMessages for a single channel and calendar day.
-
-    Returns a stats dict: {msgs_processed, msgs_skipped, sentences_generated, skipped_day}.
+    Supports News and Polarization transformations, DLQ error trapping,
+    and file-based staging.
     """
-    log.info("  Processing channel: %s for day: %s [%s → %s]", channel_name, run_date, day_start.isoformat(), day_end.isoformat())
+    cat_label = category or "general"
+    log.info(
+        "  Processing [%s] channel: %s for day: %s [%s → %s]",
+        cat_label, channel_name, run_date, day_start.isoformat(), day_end.isoformat()
+    )
 
-    # --- Watermark check (skip if already done and not forcing) ---
-    if not dry_run and not force and channel_day_already_completed(session, channel_name, run_date):
+    # Watermark check
+    if not dry_run and not force and not stage_dir and channel_day_already_completed(session, channel_name, run_date):
         msg_text = f"    ✅ Watermark found — channel {channel_name} on {run_date} already completed, skipping."
         log.info(msg_text)
         print(msg_text)
         return {"msgs_processed": 0, "msgs_skipped": 0, "sentences_generated": 0, "skipped_day": True}
 
-    # --- Start log row ---
     cleaning_entry = None
-    if not dry_run:
-        cleaning_entry = start_cleaning_log(session, channel_name, run_date, force=force)
+    if not dry_run and not stage_dir:
+        cleaning_entry = start_cleaning_log(session, channel_name, run_date, category=category, force=force)
 
-        # On force: delete all existing CleanTeleText rows for this channel in this window
+        # On force: delete existing rows for this window, guarding against deleting human annotations
         if force:
+            annotated_subq = session.query(AnnotationResult.clean_line_id).subquery()
             msg_ids_query = session.query(TelegramMessage.id).filter(
                 TelegramMessage.channel_name == channel_name,
                 TelegramMessage.date.isnot(None),
@@ -370,55 +634,244 @@ def _process_channel_day(
                 .filter(
                     CleanTeleText.channel_name == channel_name,
                     CleanTeleText.telegram_message_id.in_(msg_ids_query),
+                    CleanTeleText.id.not_in(annotated_subq),
                 )
                 .delete(synchronize_session=False)
             )
             if deleted:
-                log.info("  --force: deleted %d existing CleanTeleText rows for channel %s on %s.", deleted, channel_name, run_date)
+                log.info("  --force: deleted %d unannotated CleanTeleText rows for %s on %s.", deleted, channel_name, run_date)
 
-    # --- Process messages ---
-    msgs_processed  = 0
-    msgs_skipped    = 0
+            src_msg_ids = session.query(TelegramMessage.message_id).filter(
+                TelegramMessage.channel_name == channel_name,
+                TelegramMessage.date.isnot(None),
+                TelegramMessage.date >= day_start,
+                TelegramMessage.date <= day_end,
+            )
+            session.query(CleanTeleExtraInfo).filter(
+                CleanTeleExtraInfo.channel_name == channel_name,
+                CleanTeleExtraInfo.message_id.in_(src_msg_ids),
+            ).delete(synchronize_session=False)
+
+    msgs_processed = 0
+    msgs_skipped = 0
     sentences_generated = 0
+    staged_texts: list[dict] = []
+    staged_extras: list[dict] = []
+    staged_errors: list[dict] = []
+
+    seen_hashes: set[str] = set()
 
     for msg in iter_messages_for_channel_window(session, channel_name, day_start, day_end):
-        sentences = split_myanmar_sentences(msg.message_text, bigrams=bigrams)
+        try:
+            # ---------------------------------------------------------------
+            # 1. Polarization Category Pipeline
+            # ---------------------------------------------------------------
+            if cat_label == "polarization":
+                # In-memory intra-channel same-day deduplication
+                msg_hash = hashlib.sha256(msg.message_text.strip().encode("utf-8")).hexdigest()
+                if msg_hash in seen_hashes:
+                    msgs_skipped += 1
+                    continue
+                seen_hashes.add(msg_hash)
 
-        if not sentences:
-            msgs_skipped += 1
-            log.debug("Message id=%d (channel=%s) produced no sentences — skipped.", msg.id, channel_name)
-            continue
+                # Channel discovery logging
+                discovered = extract_telegram_channels(msg.message_text)
+                for d_ch in discovered:
+                    if known_channels and d_ch not in known_channels:
+                        disc_msg = f"[DISCOVERY] Found unmonitored Telegram channel '@{d_ch}' in channel '{channel_name}' (msg_id: {msg.message_id})"
+                        log.warning(disc_msg)
+                        print(f"      🔍 {disc_msg}")
 
-        msgs_processed += 1
+                # Split sentences
+                raw_sentences = split_myanmar_sentences(msg.message_text, bigrams=bigrams)
+                valid_sentences: list[str] = []
+                for s in raw_sentences:
+                    cleaned_s = clean_polarization_sentence(s)
+                    if cleaned_s:
+                        valid_sentences.append(cleaned_s)
 
-        if dry_run:
-            log.info(
-                "  [DRY-RUN] msg id=%d channel=%s → %d sentence(s)",
-                msg.id, msg.channel_name, len(sentences),
-            )
-            for i, s in enumerate(sentences[:5]):
-                log.info("    [%d] %s", i, s)
-        else:
-            for i, sent in enumerate(sentences):
-                session.add(CleanTeleText(
-                    telegram_message_id=msg.id,
-                    line_index=i,
-                    sentence=sent,
+                if not valid_sentences:
+                    msgs_skipped += 1
+                    continue
+
+                msgs_processed += 1
+                for idx, sent in enumerate(valid_sentences):
+                    record = {
+                        "telegram_message_id": msg.id,
+                        "line_index": idx,
+                        "sentence": sent,
+                        "channel_name": msg.channel_name,
+                        "category": category,
+                        "source_message_id": msg.message_id,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    if stage_dir:
+                        staged_texts.append(record)
+                    elif not dry_run:
+                        session.add(CleanTeleText(
+                            telegram_message_id=msg.id,
+                            line_index=idx,
+                            sentence=sent,
+                            channel_name=msg.channel_name,
+                            category=category,
+                            source_message_id=msg.message_id,
+                        ))
+                sentences_generated += len(valid_sentences)
+
+            # ---------------------------------------------------------------
+            # 2. News Category Pipeline
+            # ---------------------------------------------------------------
+            elif cat_label == "news":
+                headline, clean_info_date, original_short_note, url_lists, body_text = parse_news_message(msg.message_text, run_date=run_date)
+                extra_record = {
+                    "channel_name": msg.channel_name,
+                    "category": category or "news",
+                    "message_id": msg.message_id,
+                    "headline": headline,
+                    "clean_info_date": clean_info_date,
+                    "original_short_note": original_short_note,
+                    "url_lists": json.dumps(url_lists, ensure_ascii=False) if url_lists else None,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if stage_dir:
+                    staged_extras.append(extra_record)
+                elif not dry_run:
+                    session.add(CleanTeleExtraInfo(
+                        channel_name=msg.channel_name,
+                        category=category or "news",
+                        message_id=msg.message_id,
+                        headline=headline,
+                        clean_info_date=clean_info_date,
+                        original_short_note=original_short_note,
+                        url_lists=json.dumps(url_lists, ensure_ascii=False) if url_lists else None,
+                    ))
+
+                # Sentences: Headline is included at line_index = 0
+                body_sentences = split_myanmar_sentences(body_text, bigrams=bigrams)
+                total_sentences: list[tuple[int, str]] = []
+                if headline:
+                    total_sentences.append((0, headline))
+                for i, b_sent in enumerate(body_sentences, start=1):
+                    total_sentences.append((i, b_sent))
+
+                if not total_sentences:
+                    msgs_skipped += 1
+                    continue
+
+                msgs_processed += 1
+                for l_idx, sent in total_sentences:
+                    text_record = {
+                        "telegram_message_id": msg.id,
+                        "line_index": l_idx,
+                        "sentence": sent,
+                        "channel_name": msg.channel_name,
+                        "category": category,
+                        "source_message_id": msg.message_id,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    if stage_dir:
+                        staged_texts.append(text_record)
+                    elif not dry_run:
+                        session.add(CleanTeleText(
+                            telegram_message_id=msg.id,
+                            line_index=l_idx,
+                            sentence=sent,
+                            channel_name=msg.channel_name,
+                            category=category,
+                            source_message_id=msg.message_id,
+                        ))
+                sentences_generated += len(total_sentences)
+
+            # ---------------------------------------------------------------
+            # 3. Default General Pipeline
+            # ---------------------------------------------------------------
+            else:
+                sentences = split_myanmar_sentences(msg.message_text, bigrams=bigrams)
+                if not sentences:
+                    msgs_skipped += 1
+                    continue
+
+                msgs_processed += 1
+                for idx, sent in enumerate(sentences):
+                    record = {
+                        "telegram_message_id": msg.id,
+                        "line_index": idx,
+                        "sentence": sent,
+                        "channel_name": msg.channel_name,
+                        "category": category,
+                        "source_message_id": msg.message_id,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    if stage_dir:
+                        staged_texts.append(record)
+                    elif not dry_run:
+                        session.add(CleanTeleText(
+                            telegram_message_id=msg.id,
+                            line_index=idx,
+                            sentence=sent,
+                            channel_name=msg.channel_name,
+                            category=category,
+                            source_message_id=msg.message_id,
+                        ))
+                sentences_generated += len(sentences)
+
+        except Exception as exc:
+            err_type = type(exc).__name__
+            err_msg = str(exc)
+            stack = traceback.format_exc()
+            log.error("Error processing msg_id=%s in channel=%s: %s", msg.id, channel_name, err_msg)
+            err_record = {
+                "channel_name": msg.channel_name,
+                "category": category or "general",
+                "run_date": run_date,
+                "telegram_message_id": msg.id,
+                "source_message_id": msg.message_id,
+                "raw_text": msg.message_text,
+                "error_type": err_type,
+                "error_message": err_msg,
+                "stack_trace": stack,
+                "retry_count": 0,
+                "resolved": False,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if stage_dir:
+                staged_errors.append(err_record)
+            elif not dry_run:
+                session.add(CleaningErrorLog(
                     channel_name=msg.channel_name,
+                    category=category or "general",
+                    run_date=run_date,
+                    telegram_message_id=msg.id,
                     source_message_id=msg.message_id,
+                    raw_text=msg.message_text,
+                    error_type=err_type,
+                    error_message=err_msg,
+                    stack_trace=stack,
+                    retry_count=0,
+                    resolved=False,
                 ))
-            sentences_generated += len(sentences)
 
-    # --- Commit & finish log ---
-    if not dry_run:
-        session.commit()
-        finish_cleaning_log(
-            session, cleaning_entry,
-            messages_processed=msgs_processed,
-            messages_skipped=msgs_skipped,
-            sentences_generated=sentences_generated,
+    # Commit or flush stage
+    if stage_dir:
+        stage_channel_records(
+            stage_dir=stage_dir,
+            category=category or "general",
+            channel_name=channel_name,
+            run_date=run_date,
+            text_rows=staged_texts,
+            extra_rows=staged_extras,
+            error_rows=staged_errors,
         )
+    elif not dry_run:
         session.commit()
+        if cleaning_entry:
+            finish_cleaning_log(
+                session, cleaning_entry,
+                messages_processed=msgs_processed,
+                messages_skipped=msgs_skipped,
+                sentences_generated=sentences_generated,
+            )
+            session.commit()
 
     return {
         "msgs_processed": msgs_processed,
@@ -427,6 +880,276 @@ def _process_channel_day(
         "skipped_day": False,
     }
 
+
+# ===========================================================================
+# Bulk Ingestion Engine (--upload-staged)
+# ===========================================================================
+
+def upload_staged_data(config: dict, stage_dir: str, category: str, env: str | None = None) -> dict:
+    """
+    Ingest all staged .jsonl files for category from stage_dir into Neon PostgreSQL
+    in a single pooled connection and transaction.
+    """
+    environment, schema = resolve_environment_and_schema(config, env_override=env)
+    pg_url = config.get("postgresql", {}).get("url") or os.getenv("NEON_DATABASE_URL")
+    if not pg_url:
+        raise ValueError("NEON_DATABASE_URL or postgresql.url not configured.")
+
+    cat_path = Path(stage_dir) / category
+    if not cat_path.exists():
+        print(f"[*] Staging path does not exist: {cat_path}. Nothing to upload.")
+        return {"uploaded_texts": 0, "uploaded_extras": 0, "uploaded_errors": 0}
+
+    engine = get_pg_engine(pg_url, schema=schema)
+    AnnotationBase.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    print("=" * 65)
+    print(f" 🚀 Bulk Ingesting Staged Clean Data: category='{category}'")
+    print(f" Staging Directory: {cat_path}")
+    print(f" Target Schema    : {schema}")
+    print("=" * 65)
+
+    uploaded_texts = 0
+    uploaded_extras = 0
+    uploaded_errors = 0
+    files_to_delete: list[Path] = []
+    channel_dates: dict[tuple[str, str], dict] = {}
+
+    try:
+        # Ingest clean_tele_text
+        text_files = list(cat_path.glob("*_clean_tele_text.jsonl"))
+        for tf in text_files:
+            batch: list[dict] = []
+            with open(tf, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    ch = item.get("channel_name")
+                    # Parse run_date from filename or created_at
+                    parts = tf.stem.split("_")
+                    r_date = parts[1] if len(parts) >= 3 else item.get("created_at", "")[:10]
+                    key = (ch, r_date)
+                    if key not in channel_dates:
+                        channel_dates[key] = {"sents": 0, "msgs": set()}
+                    channel_dates[key]["sents"] += 1
+                    if item.get("telegram_message_id"):
+                        channel_dates[key]["msgs"].add(item["telegram_message_id"])
+
+                    # Reformat created_at
+                    if isinstance(item.get("created_at"), str):
+                        try:
+                            item["created_at"] = datetime.fromisoformat(item["created_at"])
+                        except Exception:
+                            item["created_at"] = datetime.now(timezone.utc)
+                    batch.append(item)
+                    if len(batch) >= 1000:
+                        session.bulk_insert_mappings(CleanTeleText, batch)
+                        session.flush()
+                        uploaded_texts += len(batch)
+                        batch = []
+            if batch:
+                session.bulk_insert_mappings(CleanTeleText, batch)
+                session.flush()
+                uploaded_texts += len(batch)
+            files_to_delete.append(tf)
+
+        # Ingest clean_tele_extra_info
+        extra_files = list(cat_path.glob("*_clean_tele_extra_info.jsonl"))
+        for ef in extra_files:
+            batch = []
+            with open(ef, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    if isinstance(item.get("created_at"), str):
+                        try:
+                            item["created_at"] = datetime.fromisoformat(item["created_at"])
+                        except Exception:
+                            item["created_at"] = datetime.now(timezone.utc)
+                    batch.append(item)
+                    if len(batch) >= 1000:
+                        session.bulk_insert_mappings(CleanTeleExtraInfo, batch)
+                        session.flush()
+                        uploaded_extras += len(batch)
+                        batch = []
+            if batch:
+                session.bulk_insert_mappings(CleanTeleExtraInfo, batch)
+                session.flush()
+                uploaded_extras += len(batch)
+            files_to_delete.append(ef)
+
+        # Ingest errors
+        err_files = list(cat_path.glob("*_errors.jsonl"))
+        for erf in err_files:
+            batch = []
+            with open(erf, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    if isinstance(item.get("created_at"), str):
+                        try:
+                            item["created_at"] = datetime.fromisoformat(item["created_at"])
+                        except Exception:
+                            item["created_at"] = datetime.now(timezone.utc)
+                    batch.append(item)
+                    if len(batch) >= 1000:
+                        session.bulk_insert_mappings(CleaningErrorLog, batch)
+                        session.flush()
+                        uploaded_errors += len(batch)
+                        batch = []
+            if batch:
+                session.bulk_insert_mappings(CleaningErrorLog, batch)
+                session.flush()
+                uploaded_errors += len(batch)
+            files_to_delete.append(erf)
+
+        # Update CleaningLog watermarks
+        for (ch, r_date), stats in channel_dates.items():
+            if not ch or not r_date:
+                continue
+            log_row = session.query(CleaningLog).filter_by(channel_name=ch, run_date=r_date).first()
+            if not log_row:
+                log_row = CleaningLog(
+                    channel_name=ch,
+                    category=category,
+                    run_date=r_date,
+                    status="completed",
+                    messages_processed=len(stats["msgs"]),
+                    messages_skipped=0,
+                    sentences_generated=stats["sents"],
+                    cleaning_start_ts=datetime.now(timezone.utc),
+                    cleaning_end_ts=datetime.now(timezone.utc),
+                )
+                session.add(log_row)
+            else:
+                log_row.status = "completed"
+                log_row.category = category
+                log_row.sentences_generated += stats["sents"]
+                log_row.messages_processed += len(stats["msgs"])
+                log_row.cleaning_end_ts = datetime.now(timezone.utc)
+
+        session.commit()
+        print(f"  ✔ Ingestion committed: {uploaded_texts} sentences, {uploaded_extras} extras, {uploaded_errors} errors.")
+
+        # Cleanup files after verified commit
+        for p in files_to_delete:
+            try:
+                p.unlink()
+            except OSError as err:
+                log.warning("Could not unlink staging file %s: %s", p, err)
+
+    finally:
+        session.close()
+
+    return {
+        "uploaded_texts": uploaded_texts,
+        "uploaded_extras": uploaded_extras,
+        "uploaded_errors": uploaded_errors,
+    }
+
+
+# ===========================================================================
+# DLQ Replay Engine (--retry-dlq)
+# ===========================================================================
+
+def retry_dlq(
+    config: dict,
+    category: str | None = None,
+    channel: str | None = None,
+    dict_path: str | None = None,
+    env: str | None = None,
+) -> dict:
+    """Retry unresolved errors in cleaning_error_logs."""
+    environment, schema = resolve_environment_and_schema(config, env_override=env)
+    pg_url = config.get("postgresql", {}).get("url") or os.getenv("NEON_DATABASE_URL")
+    if not pg_url:
+        raise ValueError("NEON_DATABASE_URL or postgresql.url not configured.")
+
+    engine = get_pg_engine(pg_url, schema=schema)
+    AnnotationBase.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    print("=" * 65)
+    print(" 🔁 Retrying Dead Letter Queue (cleaning_error_logs)")
+    print(f" Environment : {environment} (schema: {schema})")
+    print(f" Category    : {category or 'all'}")
+    print(f" Channel     : {channel or 'all'}")
+    print("=" * 65)
+
+    bigrams = None
+    if dict_path and os.path.exists(dict_path):
+        bigrams = _load_dict_file(dict_path)
+
+    query = session.query(CleaningErrorLog).filter(CleaningErrorLog.resolved == False)
+    if category:
+        query = query.filter(CleaningErrorLog.category == category)
+    if channel:
+        query = query.filter(CleaningErrorLog.channel_name == channel)
+
+    errors = query.all()
+    print(f"[*] Found {len(errors)} unresolved DLQ record(s).")
+    recovered = 0
+    failed = 0
+
+    try:
+        for err in errors:
+            if not err.raw_text:
+                err.resolved = True
+                err.resolved_at = datetime.now(timezone.utc)
+                continue
+
+            try:
+                cat = err.category
+                sentences: list[str] = []
+                if cat == "polarization":
+                    raw_sents = split_myanmar_sentences(err.raw_text, bigrams=bigrams)
+                    for s in raw_sents:
+                        cs = clean_polarization_sentence(s)
+                        if cs:
+                            sentences.append(cs)
+                elif cat == "news":
+                    headline, clean_info_date, original_short_note, urls, body = parse_news_message(err.raw_text, run_date=err.run_date)
+                    if headline:
+                        sentences.append(headline)
+                    sentences.extend(split_myanmar_sentences(body, bigrams=bigrams))
+                else:
+                    sentences = split_myanmar_sentences(err.raw_text, bigrams=bigrams)
+
+                if sentences:
+                    for i, sent in enumerate(sentences):
+                        session.add(CleanTeleText(
+                            telegram_message_id=err.telegram_message_id,
+                            line_index=i,
+                            sentence=sent,
+                            channel_name=err.channel_name,
+                            category=err.category,
+                            source_message_id=err.source_message_id,
+                        ))
+                err.resolved = True
+                err.resolved_at = datetime.now(timezone.utc)
+                recovered += 1
+            except Exception as retry_exc:
+                err.retry_count += 1
+                err.error_message = f"Retry failed: {retry_exc}"
+                failed += 1
+
+        session.commit()
+        print(f"  ✔ DLQ Replay Complete: Recovered={recovered}, Failed={failed}")
+    finally:
+        session.close()
+
+    return {"recovered": recovered, "failed": failed}
+
+
+# ===========================================================================
+# Main Pipeline Entry
+# ===========================================================================
 
 def clean_and_upload(
     config: dict,
@@ -438,71 +1161,40 @@ def clean_and_upload(
     to_date: str | None = None,
     env: str | None = None,
     category: str | None = None,
+    stage_dir: str | None = None,
 ) -> None:
-    """
-    Main pipeline: read TelegramMessage → split → write CleanTeleText.
-
-    Args:
-        config:     Loaded YAML config dict.
-        channel:    Optional channel name to restrict cleaning to.
-        dry_run:    Preview splits without writing to PostgreSQL.
-        force:      Re-process days even if they have a 'completed' watermark.
-        dict_path:  Path to a custom bigram dictionary file.
-        from_date:  YYYY-MM-DD start of the day range to clean (inclusive).
-                    Defaults to the day after the latest completed watermark per channel.
-        to_date:    YYYY-MM-DD end of the day range to clean (inclusive).
-                    Defaults to today (UTC).
-        env:        Optional environment override ('dev' -> public, 'prod' -> production).
-    """
     environment, schema = resolve_environment_and_schema(config, env_override=env)
 
-    # ------------------------------------------------------------------
-    # Bigram dictionary
-    # ------------------------------------------------------------------
     effective_dict = dict_path or os.getenv("CLEANER_DICT_PATH") or config.get("cleaner", {}).get("dict_path")
     if effective_dict:
-        # Resolve path if relative
         if not os.path.isabs(effective_dict) and not os.path.exists(effective_dict):
-            candidate_root = os.path.join(PROJECT_ROOT, effective_dict)
-            candidate_base = os.path.join(BASE_DIR, effective_dict)
-            if os.path.exists(candidate_root):
-                effective_dict = candidate_root
-            elif os.path.exists(candidate_base):
-                effective_dict = candidate_base
+            cand_root = os.path.join(PROJECT_ROOT, effective_dict)
+            cand_base = os.path.join(BASE_DIR, effective_dict)
+            if os.path.exists(cand_root):
+                effective_dict = cand_root
+            elif os.path.exists(cand_base):
+                effective_dict = cand_base
 
         log.info("Loading custom bigram dict: %s", effective_dict)
         print(f"[*] Loading bigram dictionary from: {effective_dict}")
         bigrams: list[str] | None = _load_dict_file(effective_dict)
-        log.info("  → %d bigrams loaded.", len(bigrams))
     else:
-        log.info("Using built-in Myanmar bigram list (%d entries).", len(_DEFAULT_BIGRAMS))
         bigrams = None
 
-    # ------------------------------------------------------------------
-    # PostgreSQL connection
-    # ------------------------------------------------------------------
-    pg_url = (
-        os.getenv("NEON_DATABASE_URL")
-        or config.get("postgresql", {}).get("url", "")
-    )
+    pg_url = config.get("postgresql", {}).get("url") or os.getenv("NEON_DATABASE_URL", "")
     if not pg_url:
-        raise ValueError(
-            "PostgreSQL URL not set. Provide NEON_DATABASE_URL env var "
-            "or postgresql.url in config.yaml."
-        )
+        raise ValueError("PostgreSQL URL not set. Provide NEON_DATABASE_URL or postgresql.url in config.")
 
-    # Ensure annotation tables exist (incl. cleaning_logs)
-    if not dry_run:
-        init_annotation_db(pg_url, schema=schema)
+    if not dry_run and not stage_dir:
+        init_annotation_db(pg_url, schema=schema, config=config)
 
     engine = get_pg_engine(pg_url, schema=schema)
     Session = sessionmaker(bind=engine)
     session = Session()
 
+    known_channels = get_known_channels(config)
+
     try:
-        # ------------------------------------------------------------------
-        # Resolve target channels
-        # ------------------------------------------------------------------
         if channel:
             channels = [str(channel)]
         else:
@@ -521,29 +1213,24 @@ def clean_and_upload(
         today_utc = datetime.now(timezone.utc).date()
         resolved_to: date = _to_date(to_date) or today_utc
 
-        # ------------------------------------------------------------------
-        # Print run header
-        # ------------------------------------------------------------------
         print("=" * 65)
-        print("  🧹 Myanmar Sentence Cleaner (Per-Channel Watermark)")
+        print("  🧹 Myanmar Sentence Cleaner (Concurreny & Advanced Cleaning)")
         print("=" * 65)
         print(f"  Environment : {environment} (schema: {schema})")
+        print(f"  Category    : {category or 'all'}")
         print(f"  Channels    : {channels}")
         print(f"  To Date     : {resolved_to}")
+        print(f"  Staging Dir : {stage_dir or 'Disabled (Direct DB Write)'}")
         print(f"  Dry-run     : {dry_run}")
         print(f"  Force       : {force}")
-        print(f"  Bigram dict : {'custom' if effective_dict else 'built-in'}")
         print("=" * 65)
 
-        grand_msgs      = 0
-        grand_skipped   = 0
-        grand_sents     = 0
-        total_days_run  = 0
+        grand_msgs = 0
+        grand_skipped = 0
+        grand_sents = 0
+        total_days_run = 0
         total_days_skip = 0
 
-        # ------------------------------------------------------------------
-        # Process each channel
-        # ------------------------------------------------------------------
         for ch in channels:
             print(f"\n📢  Channel: {ch}")
             log.info("Starting cleaning for channel: %s", ch)
@@ -564,14 +1251,11 @@ def clean_and_upload(
                         log.info("No messages for channel %s.", ch)
                         continue
                     resolved_from = earliest.date() if hasattr(earliest, "date") else earliest
-                    log.info("Channel %s: starting from earliest message date: %s", ch, resolved_from)
                 else:
                     resolved_from = latest + timedelta(days=1)
-                    log.info("Channel %s incremental mode: latest completed = %s. Cleaning from %s.", ch, latest, resolved_from)
 
             if resolved_from > resolved_to:
                 print(f"  ✅ Channel {ch} already up-to-date (latest completed: {resolved_from - timedelta(days=1)}).")
-                log.info("Channel %s is up-to-date (from=%s > to=%s).", ch, resolved_from, resolved_to)
                 continue
 
             day_windows = build_day_windows(resolved_from, resolved_to)
@@ -591,53 +1275,43 @@ def clean_and_upload(
                     bigrams=bigrams,
                     dry_run=dry_run,
                     force=force,
+                    category=category,
+                    stage_dir=stage_dir,
+                    known_channels=known_channels,
                 )
 
                 if stats.get("skipped_day"):
                     total_days_skip += 1
                     continue
 
-                total_days_run  += 1
-                ch_msgs         += stats["msgs_processed"]
-                ch_skipped      += stats["msgs_skipped"]
-                ch_sents        += stats["sentences_generated"]
+                total_days_run += 1
+                ch_msgs += stats["msgs_processed"]
+                ch_skipped += stats["msgs_skipped"]
+                ch_sents += stats["sentences_generated"]
 
-                tag = "[DRY-RUN] " if dry_run else ""
+                tag = "[STAGE] " if stage_dir else ("[DRY-RUN] " if dry_run else "")
                 print(
                     f"    {tag}✔  {run_date}: "
                     f"msgs_processed={stats['msgs_processed']}  "
                     f"msgs_skipped={stats['msgs_skipped']}  "
                     f"sentences={stats['sentences_generated']}"
                 )
-                log.info(
-                    "%s[%s] %s: processed=%d skipped=%d sentences=%d",
-                    tag, ch, run_date,
-                    stats["msgs_processed"], stats["msgs_skipped"], stats["sentences_generated"],
-                )
 
-            grand_msgs    += ch_msgs
+            grand_msgs += ch_msgs
             grand_skipped += ch_skipped
-            grand_sents   += ch_sents
+            grand_sents += ch_sents
 
-        # ------------------------------------------------------------------
-        # Summary
-        # ------------------------------------------------------------------
         print()
         print("=" * 65)
         print("  Summary")
         print("=" * 65)
         print(f"  Channels evaluated : {len(channels)}")
         print(f"  Channel-days run   : {total_days_run}")
-        print(f"  Channel-days skip  : {total_days_skip}  (already completed)")
+        print(f"  Channel-days skip  : {total_days_skip}")
         print(f"  Msgs processed     : {grand_msgs}")
-        print(f"  Msgs skipped       : {grand_skipped}  (empty after splitting)")
+        print(f"  Msgs skipped       : {grand_skipped}")
         print(f"  Sentences generated: {grand_sents}")
         print("=" * 65)
-
-        log.info(
-            "Run complete. days_run=%d days_skip=%d msgs=%d skipped=%d sentences=%d",
-            total_days_run, total_days_skip, grand_msgs, grand_skipped, grand_sents,
-        )
 
     finally:
         session.close()
@@ -649,74 +1323,32 @@ def clean_and_upload(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Myanmar sentence cleaner: splits TelegramMessage paragraphs "
-            "and uploads CleanTeleText rows to Neon PostgreSQL.\n\n"
-            "By default runs incrementally per channel: finds each channel's latest "
-            "completed CleaningLog watermark and processes newer messages."
-        ),
+        description="Myanmar sentence cleaner & advanced data transformation pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Incremental (default): process messages since last completed watermark per channel
-  uv run python services/telegram_scraper/cleaner.py
-
-  # Process a specific channel only
-  uv run python services/telegram_scraper/cleaner.py --channel shweba000
-
-  # Dry-run preview of incremental pass
-  uv run python services/telegram_scraper/cleaner.py --dry-run
-
-  # Clean yesterday's closed 24-hour window (recommended for daily Airflow runs)
-  uv run python services/telegram_scraper/cleaner.py --yesterday
-
-  # Backfill the last 7 days (today + previous 6)
-  uv run python services/telegram_scraper/cleaner.py --lookback 7
-
-  # Backfill a specific date range
-  uv run python services/telegram_scraper/cleaner.py --from-date 2025-08-01 --to-date 2025-08-07
-
-  # Re-process (force) an already-completed date range
-  uv run python services/telegram_scraper/cleaner.py --from-date 2025-08-01 --to-date 2025-08-07 --force
-
-  # Use a custom bigram dictionary
-  uv run python services/telegram_scraper/cleaner.py --dict ref/1syl.potma.dict
-        """,
     )
-    parser.add_argument("--config", default="config.yaml",
-                        help="Config file name (default: config.yaml).")
-    parser.add_argument("--env", choices=["dev", "prod"], default=None,
-                        help="Environment to target ('dev' -> public schema, 'prod' -> production schema). Overrides config.yaml.")
-    parser.add_argument("--channel", "-c", default=None, metavar="NAME",
-                        help="Specific channel name to clean (default: all channels in config/DB).")
-    parser.add_argument("--category", default=None,
-                        help="Category to target (e.g. 'polarization' or 'news'). Filters channels.")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Preview splits without writing to PostgreSQL.")
-    parser.add_argument("--force", action="store_true",
-                        help="Re-process already-completed day windows (deletes existing rows).")
+    parser.add_argument("--config", default="config.yaml", help="Config file path.")
+    parser.add_argument("--env", choices=["dev", "prod"], default=None, help="Target environment.")
+    parser.add_argument("--channel", "-c", default=None, metavar="NAME", help="Specific channel name.")
+    parser.add_argument("--category", default=None, help="Category ('polarization' or 'news').")
+    parser.add_argument("--dry-run", action="store_true", help="Preview splits without writing.")
+    parser.add_argument("--force", action="store_true", help="Re-process already completed days.")
+    parser.add_argument("--dict", default=None, metavar="PATH", help="Custom bigram dict file.")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable DEBUG logging.")
 
-    # Date range — mutually exclusive ways to specify the window
+    # Staging & Bulk Ingestion flags
+    parser.add_argument("--stage-dir", default=None, help="Local staging directory for file-based outputs.")
+    parser.add_argument("--upload-staged", action="store_true", help="Bulk upload staged .jsonl files for category.")
+
+    # DLQ retry flag
+    parser.add_argument("--retry-dlq", action="store_true", help="Retry failed texts in cleaning_error_logs.")
+
+    # Date range
     date_group = parser.add_mutually_exclusive_group()
-    date_group.add_argument("--yesterday", action="store_true",
-                            help="Clean only yesterday's closed 24-hour calendar day. "
-                                 "Recommended for daily Airflow runs. Mutually exclusive with --lookback and --from-date.")
-    date_group.add_argument("--lookback", type=int, default=None, metavar="DAYS",
-                            help="Number of days to look back from today (inclusive). "
-                                 "E.g. --lookback 7 = today + last 6 days. "
-                                 "Mutually exclusive with --yesterday and --from-date.")
-    date_group.add_argument("--from-date", metavar="YYYY-MM-DD", default=None,
-                            help="Start of day range to clean (inclusive). "
-                                 "Defaults to the day after the latest completed watermark. "
-                                 "Mutually exclusive with --yesterday and --lookback.")
+    date_group.add_argument("--yesterday", action="store_true", help="Clean only yesterday's 24h day window.")
+    date_group.add_argument("--lookback", type=int, default=None, metavar="DAYS", help="Lookback days.")
+    date_group.add_argument("--from-date", metavar="YYYY-MM-DD", default=None, help="Start date.")
+    parser.add_argument("--to-date", metavar="YYYY-MM-DD", default=None, help="End date.")
 
-    parser.add_argument("--to-date", metavar="YYYY-MM-DD", default=None,
-                        help="End of day range to clean (inclusive). "
-                             "Defaults to today (UTC).")
-    parser.add_argument("--dict", default=None, metavar="PATH",
-                        help="Custom bigram dict file (one entry per line).")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Enable DEBUG logging.")
     return parser.parse_args()
 
 
@@ -725,6 +1357,25 @@ if __name__ == "__main__":
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    cfg = load_config(args.config)
+
+    # 1. Bulk Upload Mode
+    if args.upload_staged:
+        if not args.category:
+            print("❌ Error: --upload-staged requires --category (e.g. 'polarization' or 'news').", file=sys.stderr)
+            sys.exit(1)
+        if not args.stage_dir:
+            print("❌ Error: --upload-staged requires --stage-dir.", file=sys.stderr)
+            sys.exit(1)
+        upload_staged_data(cfg, stage_dir=args.stage_dir, category=args.category, env=args.env)
+        sys.exit(0)
+
+    # 2. DLQ Replay Mode
+    if args.retry_dlq:
+        retry_dlq(cfg, category=args.category, channel=args.channel, dict_path=args.dict, env=args.env)
+        sys.exit(0)
+
+    # 3. Normal / Staging Cleaning Mode
     resolved_from_date = args.from_date
     resolved_to_date = args.to_date
 
@@ -734,13 +1385,11 @@ if __name__ == "__main__":
         resolved_to_date = yesterday_str
     elif args.lookback is not None:
         if args.lookback < 1:
-            import sys as _sys
-            print("error: --lookback must be at least 1", file=_sys.stderr)
-            _sys.exit(1)
+            print("error: --lookback must be at least 1", file=sys.stderr)
+            sys.exit(1)
         lookback_start = datetime.now(timezone.utc).date() - timedelta(days=args.lookback - 1)
         resolved_from_date = lookback_start.strftime("%Y-%m-%d")
 
-    cfg = load_config(args.config)
     clean_and_upload(
         config=cfg,
         channel=args.channel,
@@ -751,5 +1400,5 @@ if __name__ == "__main__":
         to_date=resolved_to_date,
         env=args.env,
         category=args.category,
+        stage_dir=args.stage_dir,
     )
-
